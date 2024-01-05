@@ -2,7 +2,8 @@
 # Import and load
 import numpy as np
 import scipy.io as sio
-
+import scipy.stats as sts
+from scipy.signal import convolve2d
 
 import matplotlib.pylab as plt
 import nemos as nmo
@@ -10,6 +11,91 @@ import jax.numpy as jnp
 
 from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.linear_model import Ridge
+from itertools import product
+
+
+def find_optimal_gauss(image, pixel_size, variances, angles):
+    # define point grid
+    X, Y = np.meshgrid(np.arange(pixel_size), np.arange(pixel_size))
+    xy = np.c_[X.flatten(), Y.flatten()]
+    # define rotation
+    rotation = lambda angle: np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)]]
+    )
+    # define gaussian
+    gauss = lambda x, cov: sts.multivariate_normal.pdf(
+        x,
+        mean=[pixel_size // 2, pixel_size // 2],
+        cov=(cov + cov.T)/2).reshape(
+        pixel_size, pixel_size
+    )
+    rot_gauss = lambda x, ang, var_x, var_y: gauss(x, rotation(ang).T @ np.diag([var_x, var_y]) @ rotation(ang))
+    max_val = 0
+    best_param = None
+    best_coord = None
+    best_kernel = None
+    all_res = []
+    for var_x, var_y, ang in product(variances, variances, angles):
+        kernel = rot_gauss(xy, ang, var_x, var_y)
+        kernel = kernel / np.linalg.norm(kernel)
+        convolved_image = convolve2d(image, kernel, mode='same', boundary='fill', fillvalue=0)
+        peak_x, peak_y = np.unravel_index(np.argmax(convolved_image), image.shape)
+        all_res.append((var_x, var_y, ang, np.max(convolved_image), convolved_image[peak_x, peak_y]))
+        if max_val < convolved_image[peak_x, peak_y]:
+            best_param = var_x, var_y, ang
+            best_coord = peak_x, peak_y
+            best_kernel = kernel
+            max_val = convolved_image[peak_x, peak_y]
+    return best_param, best_kernel, best_coord,all_res
+
+
+def plot_image_with_contour(image, kernel, coord, pad_with_nan=True):
+    """
+    Plots an image with a contour overlay of the kernel.
+
+    Parameters:
+    image : np.ndarray
+        The image to be plotted.
+    kernel : np.ndarray
+        The kernel whose contours are to be overlaid on the image.
+    coord : tuple
+        The coordinates (x, y) where the kernel is centered.
+    pad_with_nan : bool
+        If True, pads with NaN, otherwise pads with zeros.
+    """
+    plt.figure(figsize=(8, 8))
+
+    # Pad the kernel to match the image size
+    pad_height = image.shape[0] - kernel.shape[0]
+    pad_width = image.shape[1] - kernel.shape[1]
+    pad_top = coord[0] - kernel.shape[0] // 2
+    pad_left = coord[1] - kernel.shape[1] // 2
+    pad_bottom = pad_height - pad_top
+    pad_right = pad_width - pad_left
+
+    if pad_with_nan:
+        pad_value = np.nan
+    else:
+        pad_value = 0
+
+    padded_kernel = np.pad(
+        kernel, ((pad_top, pad_bottom), (pad_left, pad_right)),
+        'constant', constant_values=(pad_value, pad_value))
+
+    # Plot the image
+    plt.imshow(image, cmap='gray')  # Choose a colormap suitable for your image
+
+    # Overlay the contour. Adjust levels and colors as needed.
+    plt.contour(padded_kernel, levels=5, colors='red', alpha=0.6)  # alpha for transparency
+
+    # Customizations
+    plt.title("Image with Kernel Contour")
+    plt.xlabel("X-axis")
+    plt.ylabel("Y-axis")
+
+    plt.show()
+
 
 dat = sio.loadmat("/Users/ebalzani/Code/group_lasso_grant/group-lasso-glm/data/m691l1_xytNoise_stimulus.mat")
 dat_activity = sio.loadmat("/Users/ebalzani/Code/group_lasso_grant/group-lasso-glm/data/m691l1#12_second_64_workspace.mat")
@@ -88,17 +174,13 @@ X = np.zeros((binned_spikes2.shape[0] - ws, 51, 51, ws))
 for k in range(ws, binned_spikes2.shape[0]):
     X[k - ws, :, :, :] = frame_tensor[..., k - ws: k]
 
-# %%
-# ridge
-model = Ridge()
-par_grid = {'alpha': [0.001, 0.01, 0.1, 1, 10]}
-kfold = KFold(shuffle=False)
-cls = GridSearchCV(model, param_grid=par_grid, cv=kfold)
-# %%
-# fit
-neu = 5
-cls.fit(X.reshape(-1, 51 ** 2 * 5), binned_spikes2[5:, neu])
 
+
+
+# %%
+# Fit
+neu = 5
+regularizer_strength = 0.01
 # %%
 #  use basis
 basis = nmo.basis.RaisedCosineBasisLinear(10) ** 2
@@ -106,17 +188,16 @@ _, _, B = basis.evaluate_on_grid(51, 51)
 
 # %%
 # pass through basis (long on CPU)
-Xb = np.einsum("tijk,ijm->tmk", X, B)
+Xb = jnp.einsum("tijk,ijm->tmk", X, B)
 # %%
 # fit from basis
-neu = 5
-cls_basis = GridSearchCV(model, param_grid=par_grid, cv=kfold)
-cls_basis.fit(Xb.reshape(-1, np.prod(Xb.shape[1:])), binned_spikes2[5:, neu])
+model = Ridge(alpha=regularizer_strength)
+model.fit(Xb.reshape(-1, np.prod(Xb.shape[1:])), binned_spikes2[5:, neu])
 # %%
 # plot results
 plt.figure()
 plt.title("Linear Regression")
-weights = cls_basis.best_estimator_.coef_.reshape(100, 5)
+weights = model.coef_.reshape(100, 5)
 imgs = np.einsum("wk,ijw->ijk", weights, B)
 for k in range(5):
     plt.subplot(1, 5, k + 1)
@@ -127,22 +208,20 @@ for k in range(5):
 
 # %%
 # fit a glm
-param_grid_nemos = {"observation_model__regularizer_strength": par_grid["alpha"]}
 regularizer = nmo.regularizer.Ridge(solver_name="LBFGS",
                                     solver_kwargs={'jit': True, 'tol': 10 ** -8},
-                                    )
+                                    regularizer_strength=regularizer_strength)
 observation_model = nmo.observation_models.PoissonObservations(inverse_link_function=jnp.exp)
 model_jax = nmo.glm.GLM(regularizer=regularizer, observation_model=observation_model)
-cls_basis_glm = GridSearchCV(model_jax, param_grid=par_grid, cv=kfold)
-cls_basis_glm.fit(
+model_jax.fit(
     Xb.reshape(-1, np.prod(Xb.shape[1:]))[:, None, :],
     binned_spikes2[5:, neu:neu + 1])
 
 
 # plot resutls glm
+weights = model_jax.coef_.reshape(100, 5)
 plt.figure()
 plt.title("GLM")
-weights = cls_basis_glm.best_estimator_.spike_basis_coeff_.reshape(100, 5)
 imgs = np.einsum("wk,ijw->ijk", weights, B)
 for k in range(5):
     plt.subplot(1, 5, k + 1)
@@ -152,3 +231,9 @@ for k in range(5):
     plt.yticks([])
 
 
+# create filter bank
+rot_angles = np.arange(0, 20) * np.pi / 20
+vars = np.linspace(0.5, 10.5, 20)
+pixel_size = 17
+best_param, best_kernel, best_coord, all_res = find_optimal_gauss(-imgs[..., 3], pixel_size, vars, rot_angles)
+plot_image_with_contour(imgs[..., 3], best_kernel, best_coord)
