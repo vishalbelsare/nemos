@@ -68,6 +68,7 @@ for cc, unt_id in enumerate(curated_units):
     binned_spikes2[:, cc] = np.histogram(spk_times[sel_unt], bins=time_sec)[0]
 
 # %%
+plt.figure()
 average_over_frames = 3
 for k in range(1, 6):
     for av in range(1, 1 + average_over_frames):
