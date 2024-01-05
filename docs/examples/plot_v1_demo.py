@@ -68,6 +68,7 @@ for cc, unt_id in enumerate(curated_units):
     binned_spikes2[:, cc] = np.histogram(spk_times[sel_unt], bins=time_sec)[0]
 
 # %%
+# reverse correlation
 plt.figure()
 average_over_frames = 3
 for k in range(1, 6):
@@ -79,6 +80,7 @@ for k in range(1, 6):
         plt.imshow(rvs)
         plt.xticks([])
         plt.yticks([])
+
 # %%
 # linear regr
 ws = 5
