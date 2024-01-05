@@ -13,41 +13,76 @@ from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.linear_model import Ridge
 from itertools import product
 
-
 def find_optimal_gauss(image, pixel_size, variances, angles):
-    # define point grid
+    """
+    Find the optimal Gaussian kernel parameters that best match an image.
+
+    Parameters
+    ----------
+    image : np.ndarray
+        The image to be processed.
+    pixel_size : int
+        Size of the pixel grid for the Gaussian kernel.
+    variances : iterable
+        Iterable of variance values to be tested for the Gaussian kernel.
+    angles : iterable
+        Iterable of angle values to be tested for the Gaussian kernel.
+
+    Returns
+    -------
+    best_param : tuple
+        The best parameters found (var_x, var_y, angle).
+    best_kernel : np.ndarray
+        The best Gaussian kernel found.
+    best_coord : tuple
+        The coordinates (x, y) of the peak value in the convolved image.
+
+    Notes
+    -----
+    The function tests various combinations of variances and angles for
+    Gaussian kernels and selects the one that results in the highest peak
+    value when convolved with the image.
+    """
+    # Define point grid
     X, Y = np.meshgrid(np.arange(pixel_size), np.arange(pixel_size))
-    xy = np.c_[X.flatten(), Y.flatten()]
-    # define rotation
-    rotation = lambda angle: np.array([
-        [np.cos(angle), -np.sin(angle)],
-        [np.sin(angle), np.cos(angle)]]
-    )
-    # define gaussian
-    gauss = lambda x, cov: sts.multivariate_normal.pdf(
-        x,
-        mean=[pixel_size // 2, pixel_size // 2],
-        cov=(cov + cov.T)/2).reshape(
-        pixel_size, pixel_size
-    )
-    rot_gauss = lambda x, ang, var_x, var_y: gauss(x, rotation(ang).T @ np.diag([var_x, var_y]) @ rotation(ang))
+    xy = np.column_stack([X.flatten(), Y.flatten()])
+
+    # Define rotation matrix
+    def rotation(angle):
+        return np.array([
+            [np.cos(angle), -np.sin(angle)],
+            [np.sin(angle), np.cos(angle)]
+        ])
+
+    # Define Gaussian function
+    def gauss(x, cov):
+        return sts.multivariate_normal.pdf(
+            x, mean=[pixel_size // 2, pixel_size // 2], cov=(cov + cov.T) / 2
+        ).reshape(pixel_size, pixel_size)
+
+    # Define rotated Gaussian function
+    def rot_gauss(x, ang, var_x, var_y):
+        rot = rotation(ang)
+        return gauss(x, rot.T @ np.diag([var_x, var_y]) @ rot)
+
+    # Initialize variables for finding the optimal Gaussian
     max_val = 0
-    best_param = None
-    best_coord = None
-    best_kernel = None
-    all_res = []
+    best_param, best_coord, best_kernel = None, None, None
+
+    # Iterate over all combinations of variances and angles
     for var_x, var_y, ang in product(variances, variances, angles):
         kernel = rot_gauss(xy, ang, var_x, var_y)
-        kernel = kernel / np.linalg.norm(kernel)
+        kernel /= np.linalg.norm(kernel)
         convolved_image = convolve2d(image, kernel, mode='same', boundary='fill', fillvalue=0)
-        peak_x, peak_y = np.unravel_index(np.argmax(convolved_image), image.shape)
-        all_res.append((var_x, var_y, ang, np.max(convolved_image), convolved_image[peak_x, peak_y]))
+        peak_y, peak_x = np.unravel_index(np.argmax(convolved_image), image.shape)
+
         if max_val < convolved_image[peak_x, peak_y]:
-            best_param = var_x, var_y, ang
-            best_coord = peak_x, peak_y
+            best_param = (var_x, var_y, ang)
+            best_coord = (peak_x, peak_y)
             best_kernel = kernel
             max_val = convolved_image[peak_x, peak_y]
-    return best_param, best_kernel, best_coord,all_res
+
+    return best_param, best_kernel, best_coord
 
 
 def plot_image_with_contour(image, kernel, coord, pad_with_nan=True):
@@ -235,5 +270,5 @@ for k in range(5):
 rot_angles = np.arange(0, 20) * np.pi / 20
 vars = np.linspace(0.5, 10.5, 20)
 pixel_size = 17
-best_param, best_kernel, best_coord, all_res = find_optimal_gauss(-imgs[..., 3], pixel_size, vars, rot_angles)
+best_param, best_kernel, best_coord = find_optimal_gauss(-imgs[..., 3], pixel_size, vars, rot_angles)
 plot_image_with_contour(imgs[..., 3], best_kernel, best_coord)
