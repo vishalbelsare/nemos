@@ -13,6 +13,7 @@ from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.linear_model import Ridge
 from itertools import product
 
+
 def find_optimal_gauss(image, pixel_size, variances, angles):
     """
     Find the optimal Gaussian kernel parameters that best match an image.
@@ -68,13 +69,16 @@ def find_optimal_gauss(image, pixel_size, variances, angles):
     # Initialize variables for finding the optimal Gaussian
     max_val = 0
     best_param, best_coord, best_kernel = None, None, None
+    res = []
 
     # Iterate over all combinations of variances and angles
     for var_x, var_y, ang in product(variances, variances, angles):
         kernel = rot_gauss(xy, ang, var_x, var_y)
         kernel /= np.linalg.norm(kernel)
         convolved_image = convolve2d(image, kernel, mode='same', boundary='fill', fillvalue=0)
-        peak_y, peak_x = np.unravel_index(np.argmax(convolved_image), image.shape)
+        peak_x, peak_y = np.unravel_index(np.argmax(convolved_image), image.shape)
+
+        res.append((convolved_image[peak_x, peak_y], np.max(convolved_image)))
 
         if max_val < convolved_image[peak_x, peak_y]:
             best_param = (var_x, var_y, ang)
@@ -82,7 +86,7 @@ def find_optimal_gauss(image, pixel_size, variances, angles):
             best_kernel = kernel
             max_val = convolved_image[peak_x, peak_y]
 
-    return best_param, best_kernel, best_coord
+    return best_param, best_kernel, best_coord, res
 
 
 def plot_image_with_contour(image, kernel, coord, pad_with_nan=True):
@@ -270,5 +274,9 @@ for k in range(5):
 rot_angles = np.arange(0, 20) * np.pi / 20
 vars = np.linspace(0.5, 10.5, 20)
 pixel_size = 17
-best_param, best_kernel, best_coord = find_optimal_gauss(-imgs[..., 3], pixel_size, vars, rot_angles)
-plot_image_with_contour(imgs[..., 3], best_kernel, best_coord)
+# find and plot negative and positive part of the filter
+best_param_pos, best_kernel_pos, best_coord_pos,res = find_optimal_gauss(imgs[..., 2], pixel_size, vars, rot_angles)
+plot_image_with_contour(imgs[..., 2], best_kernel_pos, best_coord_pos)
+
+best_param_neg, best_kernel_neg, best_coord_neg,res = find_optimal_gauss(-imgs[..., 2], pixel_size, vars, rot_angles)
+plot_image_with_contour(imgs[..., 2], best_kernel_neg, best_coord_neg)
