@@ -63,13 +63,13 @@ plt.ylabel("true coef")
 
 
 # APPROACH 2
-reg = nmo.regularizer.UnRegularized(solver_kwargs={"tol": 10**-12})
+reg = nmo.regularizer.UnRegularized("LBFGS", solver_kwargs={"tol": 10**-12})
 obs = nmo.observation_models.PoissonObservations(inverse_link_function=lambda x: x)
-pw_lnp = PositiveWeightsNLNP(regularizer=reg, observation_model=obs, )
-pw_lnp.fit(X[:, np.newaxis], count[:, np.newaxis])
+pw_nlnp = PositiveWeightsNLNP(regularizer=reg, observation_model=obs, )
+pw_nlnp.fit(X[:, np.newaxis], count[:, np.newaxis])
 plt.figure()
 plt.title("positive weights NLNP")
-plt.scatter(np.exp(pw_lnp.coef_.flatten()), weights.flatten())
+plt.scatter(np.exp(pw_nlnp.coef_.flatten()), weights.flatten())
 plt.xlabel("fit coef")
 plt.ylabel("true coef")
 
