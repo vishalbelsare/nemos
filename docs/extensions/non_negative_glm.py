@@ -1,5 +1,6 @@
 from typing import Tuple
 
+import jax.nn
 import matplotlib.pyplot as plt
 from jax import numpy as jnp
 
@@ -34,7 +35,7 @@ class PositiveWeightsNLNP(nmo.glm.GLM):
     def _predict(
         self, params: Tuple[DESIGN_INPUT_TYPE, jnp.ndarray], X: jnp.ndarray
     ) -> jnp.ndarray:
-        params = (jnp.exp(params[0]), params[1])
+        params = (jax.nn.softplus(params[0]), params[1])
         return super()._predict(params, X)
 
 
@@ -69,7 +70,7 @@ pw_nlnp = PositiveWeightsNLNP(regularizer=reg, observation_model=obs, )
 pw_nlnp.fit(X[:, np.newaxis], count[:, np.newaxis])
 plt.figure()
 plt.title("positive weights NLNP")
-plt.scatter(np.exp(pw_nlnp.coef_.flatten()), weights.flatten())
+plt.scatter(jax.nn.softplus(pw_nlnp.coef_.flatten()), weights.flatten())
 plt.xlabel("fit coef")
 plt.ylabel("true coef")
 
