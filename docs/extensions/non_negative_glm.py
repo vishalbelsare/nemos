@@ -35,7 +35,7 @@ class PositiveWeightsNLNP(nmo.glm.GLM):
     def _predict(
         self, params: Tuple[DESIGN_INPUT_TYPE, jnp.ndarray], X: jnp.ndarray
     ) -> jnp.ndarray:
-        params = (jax.nn.softplus(params[0]), params[1])
+        params = (jax.nn.softplus(params[0]), jax.nn.softplus(params[1]))
         return super()._predict(params, X)
 
 
