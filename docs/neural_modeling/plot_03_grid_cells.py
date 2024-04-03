@@ -120,16 +120,10 @@ for k in range(2):
 plt.tight_layout()
 
 # %%
-# Each basis element represent a possible position of the animal in an arena whose borders are between 0 and 1.
-# To make sure that we evaluate the true position of the animal, we need to rescale the position between 0 and 1.
-
-position = position - np.min(position, axis=0)  # shift to positive values
-position = position / np.max(position, axis=0)  # scale to [0, 1]
-
-# %%
+# Each basis element represent a possible position of the animal in an arena.
 # Now we can "evaluate" the basis for each position of the animal
 
-position_basis = basis_2d.evaluate(position["x"], position["y"])
+position_basis = basis_2d(position["x"], position["y"])
 
 # %%
 # Now try to make sense of what it is
@@ -174,18 +168,18 @@ model = nmo.glm.GLM(
 
 neuron = 7
 
-model.fit(np.expand_dims(position_basis, 1), counts[:, neuron: neuron + 1])
+model.fit(position_basis, counts[:, neuron])
 
 # %%
 # We can compute the model predicted firing rate.
 
-rate_pos = model.predict(position_basis[:, np.newaxis])
+rate_pos = model.predict(position_basis)
 
 # %%
 # And compute the tuning curves/
 
 model_tuning, binsxy = nap.compute_2d_tuning_curves_continuous(
-    tsdframe=rate_pos * rate_pos.rate, features=position, nb_bins=12
+    tsdframe=rate_pos[:, np.newaxis] * rate_pos.rate, features=position, nb_bins=12
 )
 
 # %%
@@ -221,7 +215,7 @@ param_grid = dict(regularizer__regularizer_strength=[1e-6, 1e-5, 1e-3])
 cls = GridSearchCV(model, param_grid=param_grid)
 
 # run the search, the default is a 5-fold cross-validation strategy
-cls.fit(np.expand_dims(position_basis, 1), counts[:, neuron : neuron + 1])
+cls.fit(position_basis, counts[:, neuron])
 
 # %%
 # Let's get the best estimator and see what we get.
@@ -232,11 +226,11 @@ best_model = cls.best_estimator_
 # Let's predict and compute the tuning curves once again.
 
 # predict the rate with the selected model
-best_rate_pos = best_model.predict(np.expand_dims(position_basis, 1))
+best_rate_pos = best_model.predict(position_basis)
 
 # compute the 2D tuning
 best_model_tuning, binsxy = nap.compute_2d_tuning_curves_continuous(
-    tsdframe=best_rate_pos * best_rate_pos.rate, features=position, nb_bins=12
+    tsdframe=best_rate_pos[:, np.newaxis] * best_rate_pos.rate, features=position, nb_bins=12
 )
 
 # %%

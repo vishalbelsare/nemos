@@ -210,7 +210,7 @@ spikes = nwb['units'][unit_no]
 basis = nmo.basis.CyclicBSplineBasis(10, 5)
 x = np.linspace(-np.pi, np.pi, 100)
 plt.figure()
-plt.plot(x, basis.evaluate(x))
+plt.plot(x, basis(x))
 
 # Find the interval on which head_dir has no NaNs
 head_dir = head_dir.dropna()
@@ -224,9 +224,7 @@ spikes = spikes.count(bin_size=1/head_dir.rate, ep=valid_data)
 # center.
 head_dir = head_dir.interpolate(spikes)
 
-# add extra dim for n_neurons (here, 1)
-X = nmo.pytrees.FeaturePytree(head_direction=np.expand_dims(basis.evaluate(head_dir), 1))
-spikes = np.expand_dims(spikes, -1)
+X = nmo.pytrees.FeaturePytree(head_direction=basis(head_dir))
 
 # %%
 #
@@ -236,10 +234,10 @@ model = nmo.glm.GLM(regularizer=ridge)
 model.fit(X, spikes)
 print(model.coef_['head_direction'])
 
-bs_vis = basis.evaluate(x)
-tuning = jnp.einsum('xb,nb->xn', model.coef_['head_direction'], bs_vis)
+bs_vis = basis(x)
+tuning = jnp.einsum('b, tb->t', model.coef_['head_direction'], bs_vis)
 plt.figure()
-plt.polar(x, tuning.T)
+plt.polar(x, tuning)
 
 # %%
 #
@@ -276,18 +274,16 @@ model.coef_
 # our data similarly.
 
 pos_basis = nmo.basis.RaisedCosineBasisLinear(10) * nmo.basis.RaisedCosineBasisLinear(10)
-spatial_pos = nwb['SpatialSeriesLED1'].restrict(valid_data).values
-# normalize to lie on 0,1
-spatial_pos = (spatial_pos - spatial_pos.min()) / 100
+spatial_pos = nwb['SpatialSeriesLED1'].restrict(valid_data)
 
-X['spatial_position'] = np.expand_dims(pos_basis.evaluate(*spatial_pos.T), 1)
+X['spatial_position'] = pos_basis(*spatial_pos.values.T)
 
 # %%
 #
 # Running the GLM is identical to before, but we can see that our coef_
 # FeaturePytree now has two separate keys, one for each feature type.
 
-model = nmo.glm.GLM()
+model = nmo.glm.GLM(regularizer=nmo.regularizer.UnRegularized(solver_name="LBFGS"))
 model.fit(X, spikes)
 model.coef_
 
@@ -297,8 +293,8 @@ model.coef_
 # the values are slightly different, as we can see when printing out the
 # coefficients).
 
-bs_vis = basis.evaluate(x)
-tuning = jnp.einsum('xb,nb->xn', model.coef_['head_direction'], bs_vis)
+bs_vis = basis(x)
+tuning = jnp.einsum('b,nb->n', model.coef_['head_direction'], bs_vis)
 print(model.coef_['head_direction'])
 plt.figure()
 plt.polar(x, tuning.T)
@@ -308,9 +304,9 @@ plt.polar(x, tuning.T)
 # And the spatial tuning again looks like a smoothed version of our earlier
 # tuning curves.
 _, _, pos_bs_vis = pos_basis.evaluate_on_grid(50, 50)
-pos_tuning = jnp.einsum('xb,ijb->xij', model.coef_['spatial_position'], pos_bs_vis)
+pos_tuning = jnp.einsum('b,ijb->ij', model.coef_['spatial_position'], pos_bs_vis)
 plt.figure()
-plt.imshow(pos_tuning[0])
+plt.imshow(pos_tuning)
 
 # %%
 #
@@ -318,9 +314,8 @@ plt.imshow(pos_tuning[0])
 # indices in a way that is annoying:
 from nemos.type_casting import support_pynapple
 
-X_mat = nmo.utils.pynapple_concatenate([X['head_direction'], X['spatial_position']], -1)
+X_mat = nmo.utils.pynapple_concatenate_jax([X['head_direction'], X['spatial_position']], -1)
 
 model = nmo.glm.GLM()
 model.fit(X_mat, spikes)
 model.coef_[..., :basis.n_basis_funcs]
-

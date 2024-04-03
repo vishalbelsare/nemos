@@ -194,20 +194,17 @@ plotting.run_animation(neuron_count, epoch_one_spk.start[0])
 # [`nemos.utils.create_convolutional_predictor`](../../../reference/nemos/utils/#nemos.utils.create_convolutional_predictor)
 # function.
 
-# reshape counts to (num_samples, num_neurons)
-count_tsdframe = np.expand_dims(neuron_count, 1)
-
 # convert the prediction window to bins (by multiplying with the sampling rate)
 window_size = int(window_size_sec * neuron_count.rate)
 
 # convolve the counts with the identity matrix.
 plt.close("all")
-input_feature = nmo.utils.create_convolutional_predictor(
-    np.eye(window_size), [count_tsdframe]
-)[0]
+input_feature = nmo.convolve.create_convolutional_predictor(
+    np.eye(window_size), neuron_count
+)
 
 # print the NaN indices along the time axis
-print("NaN indices:\n", np.where(np.isnan(input_feature[:, 0, 0]))[0])
+print("NaN indices:\n", np.where(np.isnan(input_feature[:, 0]))[0])
 
 # %%
 # The binned counts originally have shape "number of samples", we should check that the
@@ -263,7 +260,7 @@ model = nmo.glm.GLM(regularizer=nmo.regularizer.UnRegularized("LBFGS"))
 # Fit over the training epochs
 model.fit(
     input_feature.restrict(first_half),
-    count_tsdframe.restrict(first_half)
+    neuron_count.restrict(first_half)
 )
 
 # %%
@@ -288,7 +285,7 @@ plt.legend()
 model_second_half = nmo.glm.GLM(regularizer=nmo.regularizer.UnRegularized("LBFGS"))
 model_second_half.fit(
     input_feature.restrict(second_half),
-    count_tsdframe.restrict(second_half)
+    neuron_count.restrict(second_half)
 )
 
 plt.figure()
@@ -347,13 +344,16 @@ plotting.plot_basis()
 # nemos includes `Basis` objects to handle the construction and use of these
 # basis functions.
 #
-# When we instantiate this object, the only argument we need to specify is the
-# number of functions we want: with more basis functions, we'll be able to
+# When we instantiate this object, the only arguments we need to specify is the
+# number of functions we want, the mode of operation of the basis (`"conv"`),
+# and the window size for the convolution. With more basis functions, we'll be able to
 # represent the effect of the corresponding input with the higher precision, at
 # the cost of adding additional parameters.
 
-
-basis = nmo.basis.RaisedCosineBasisLog(n_basis_funcs=8)
+# a basis object can be instantiated in "conv" mode for convolving  the input.
+basis = nmo.basis.RaisedCosineBasisLog(
+    n_basis_funcs=8, mode="conv", window_size=window_size
+)
 
 # `basis.evaluate_on_grid` is a convenience method to view all basis functions
 # across their whole domain:
@@ -397,10 +397,12 @@ plotting.plot_weighted_sum_basis(time, model.coef_, basis_kernels, lsq_coef)
 #
 # Let's see our basis in action. We can "compress" spike history feature by convolving the basis
 # with the counts (without creating the large spike history feature matrix).
-# This can be performed in nemos.
+# This can be performed in nemos by calling the "compute_features" method of basis.
 
 
-conv_spk = nmo.utils.create_convolutional_predictor(basis_kernels, [count_tsdframe])[0]
+# equivalent to
+# `nmo.convolve.create_convolutional_predictor(basis_kernels, neuron_count)`
+conv_spk = basis.compute_features(neuron_count)
 
 print(f"Raw count history as feature: {input_feature.shape}")
 print(f"Compressed count history as feature: {conv_spk.shape}")
@@ -421,7 +423,7 @@ plotting.plot_convolved_counts(neuron_count, conv_spk, epoch_one_spk, epoch_mult
 
 # use restrict on interval set training
 model_basis = nmo.glm.GLM(regularizer=nmo.regularizer.UnRegularized("LBFGS"))
-model_basis.fit(conv_spk.restrict(first_half), count_tsdframe.restrict(first_half))
+model_basis.fit(conv_spk.restrict(first_half), neuron_count.restrict(first_half))
 
 # %%
 # We can plot the resulting response, noting that the weights we just learned needs to be "expanded" back
@@ -455,7 +457,7 @@ plt.legend()
 # by visual comparison, as we did previously. Let's fit the second half of the dataset.
 
 model_basis_second_half = nmo.glm.GLM(regularizer=nmo.regularizer.UnRegularized("LBFGS"))
-model_basis_second_half.fit(conv_spk.restrict(second_half), count_tsdframe.restrict(second_half))
+model_basis_second_half.fit(conv_spk.restrict(second_half), neuron_count.restrict(second_half))
 
 # compute responses for the 2nd half fit
 self_connection_second_half = np.matmul(basis_kernels, np.squeeze(model_basis_second_half.coef_))
@@ -478,14 +480,14 @@ plt.legend()
 
 # compare model scores, as expected the training score is better with more parameters
 # this may could be over-fitting.
-print(f"full history train score: {model.score(input_feature.restrict(first_half), count_tsdframe.restrict(first_half), score_type='pseudo-r2-Cohen')}")
-print(f"basis train score: {model_basis.score(conv_spk.restrict(first_half), count_tsdframe.restrict(first_half), score_type='pseudo-r2-Cohen')}")
+print(f"full history train score: {model.score(input_feature.restrict(first_half), neuron_count.restrict(first_half), score_type='pseudo-r2-Cohen')}")
+print(f"basis train score: {model_basis.score(conv_spk.restrict(first_half), neuron_count.restrict(first_half), score_type='pseudo-r2-Cohen')}")
 
 # %%
 # To check that, let's try to see ho the model perform on unseen data and obtaining a test
 # score.
-print(f"\nfull history test score: {model.score(input_feature.restrict(second_half), count_tsdframe.restrict(second_half), score_type='pseudo-r2-Cohen')}")
-print(f"basis test score: {model_basis.score(conv_spk.restrict(second_half), count_tsdframe.restrict(second_half), score_type='pseudo-r2-Cohen')}")
+print(f"\nfull history test score: {model.score(input_feature.restrict(second_half), neuron_count.restrict(second_half), score_type='pseudo-r2-Cohen')}")
+print(f"basis test score: {model_basis.score(conv_spk.restrict(second_half), neuron_count.restrict(second_half), score_type='pseudo-r2-Cohen')}")
 
 # %%
 # Let's extract and plot the rates
@@ -506,20 +508,17 @@ plotting.plot_rates_and_smoothed_counts(
 # The same approach can be applied to the whole population. Now the firing rate of a neuron
 # is predicted not only by its own count history, but also by the rest of the
 # simultaneously recorded population. We can convolve the basis with the counts of each neuron
-# to get an array of predictors of shape, `(num_time_points, num_neurons, num_basis_funcs)`.
+# to get an array of predictors of shape, `(num_time_points, num_neurons * num_basis_funcs)`.
 #
 # #### Preparing the features
 
 # convolve all the neurons
-convolved_count = nmo.utils.create_convolutional_predictor(basis_kernels, [count])[0]
+convolved_count = basis.compute_features(count)
 
 # %%
 # Check the dimension to make sure it make sense
+# Shape should be (n_samples, n_basis_func * n_neurons)
 print(f"Convolved count shape: {convolved_count.shape}")
-
-# Reshape to (n_samples, 1, n_basis_func * n_neurons)
-convolved_count = np.reshape(convolved_count, (convolved_count.shape[0], 1, -1))
-print(f"Convolved count re-shaped: {convolved_count.shape}")
 
 # %%
 # #### Fitting the Model
@@ -535,7 +534,7 @@ print(f"Convolved count re-shaped: {convolved_count.shape}")
 models = []
 for neu in range(count.shape[1]):
     print(f"fitting neuron {neu}...")
-    count_neu = count[:, neu:neu+1]
+    count_neu = count[:, neu]
     model = nmo.glm.GLM(
         regularizer=nmo.regularizer.Ridge(regularizer_strength=0.1, solver_name="LBFGS")
     )
@@ -571,11 +570,6 @@ plotting.plot_rates_and_smoothed_counts(
      "Self-connection: bsais": rate_basis,
      "All-to-all: basis": predicted_firing_rate[:, 0]}
 )
-
-# %%
-# Compute the responses by multiplying the coefficients with the basis and adding
-# the result. This can be done in a single line of code with numpy.einsum.
-
 
 # %%
 # #### Visualizing the connectivity
