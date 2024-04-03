@@ -27,11 +27,13 @@ plugins:
           - docs/background
           - docs/api_guide
           - docs/neural_modeling
+          - docs/extensions
         # path to the directory where mkdocs will save the generated output
         gallery_dirs:
           - docs/generated/background
           - docs/generated/api_guide
           - docs/generated/neural_modeling
+          - docs/generated/extensions
   - gen-files:
       scripts:
         - docs/gen_ref_pages.py            # Specify the script to generate the code reference pages
@@ -62,5 +64,6 @@ nav:
     - Background: generated/background    # Link to the generated gallery Tutorials
     - API Guide: generated/api_guide # Link to the generated gallery neural_modeling
     - Neural Modeling: generated/neural_modeling # Link to the generated gallery neural_modeling
+    - Extensions: generated/extensions  # Link to the generated gallery extensions
     - For Developers: developers_notes/       # Link to the developers notes
     - Code References: reference/             # Link to the reference/ directory

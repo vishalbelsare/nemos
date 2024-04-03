@@ -1,14 +1,18 @@
+"""Non-negative GLM."""
+
 from typing import Tuple
 
 import jax.nn
 import matplotlib.pyplot as plt
 from jax import numpy as jnp
+import jax
 
 import nemos as nmo
 from jaxopt.projection import projection_non_negative
 import numpy as np
 
 from nemos.base_class import DESIGN_INPUT_TYPE
+
 
 
 # Approach 1: EXTEND REGULARIZER
