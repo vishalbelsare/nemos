@@ -61,8 +61,8 @@ class Regularizer(Base, abc.ABC):
     ----------
     allowed_solvers :
         Tuple of solver names that are allowed for use with this regularizer.
-    solver_name :
-        Name of the solver being used.
+    solver :
+        Name of the solver being used or custom callable solver.
     solver_kwargs :
         Additional keyword arguments to be passed to the solver during instantiation.
     """
@@ -71,28 +71,34 @@ class Regularizer(Base, abc.ABC):
 
     def __init__(
         self,
-        solver_name: str,
+        solver: Union[str, Callable],
         solver_kwargs: Optional[dict] = None,
+        allow_custom_solvers: bool = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.solver_name = solver_name
+        self._allow_custom_solvers = allow_custom_solvers
+        self.solver = solver
         if solver_kwargs is None:
             solver_kwargs = dict()
         self.solver_kwargs = solver_kwargs
+
 
     @property
     def allowed_solvers(self):
         return self._allowed_solvers
 
     @property
-    def solver_name(self):
-        return self._solver_name
+    def solver(self):
+        return self._solver
 
-    @solver_name.setter
-    def solver_name(self, solver_name: str):
-        self._check_solver(solver_name)
-        self._solver_name = solver_name
+    @solver.setter
+    def solver(self, val):
+        self._check_solver(val)
+        if isinstance(val, str):
+            self._solver = getattr(jaxopt, val)
+        else:
+            self._solver = val
 
     @property
     def solver_kwargs(self):
@@ -100,16 +106,16 @@ class Regularizer(Base, abc.ABC):
 
     @solver_kwargs.setter
     def solver_kwargs(self, solver_kwargs: dict):
-        self._check_solver_kwargs(self.solver_name, solver_kwargs)
+        self._check_solver_kwargs(self.solver, solver_kwargs)
         self._solver_kwargs = solver_kwargs
 
-    def _check_solver(self, solver_name: str):
+    def _check_solver(self, solver: Union[str, Callable]):
         """
         Ensure the provided solver name is allowed.
 
         Parameters
         ----------
-        solver_name :
+        solver :
             Name of the solver to be checked.
 
         Raises
@@ -117,21 +123,30 @@ class Regularizer(Base, abc.ABC):
         ValueError
             If the provided solver name is not in the list of allowed optimizers.
         """
-        if solver_name not in self.allowed_solvers:
-            raise ValueError(
-                f"Solver `{solver_name}` not allowed for "
-                f"{self.__class__} regularization. "
-                f"Allowed solvers are {self.allowed_solvers}."
-            )
+        if isinstance(solver, str):
+            if not self._allow_custom_solvers and solver not in self.allowed_solvers:
+                raise ValueError(
+                    f"Solver `{solver}` not allowed for "
+                    f"{self.__class__} regularization. "
+                    f"Allowed solvers are {self.allowed_solvers}."
+                )
+        if isinstance(solver, Callable) and not self._allow_custom_solvers:
+            raise ValueError("To allow a custom solver you must set `allow_custom_solvers = True`.")
 
-    @staticmethod
-    def _check_solver_kwargs(solver_name, solver_kwargs):
+        elif isinstance(solver, Callable):
+            if not hasattr(solver, "run"):
+                raise AttributeError("`solver` must have a `run` attribute")
+        elif not isinstance(solver, (str, Callable)):
+            raise TypeError("`solver` must the name of a`jaxopt` solver or a custom callable with a `run` method"
+                            "compatible with `jaxopt` API.")
+
+    def _check_solver_kwargs(self, solver, solver_kwargs):
         """
         Check if provided solver keyword arguments are valid.
 
         Parameters
         ----------
-        solver_name :
+        solver :
             Name of the solver.
         solver_kwargs :
             Additional keyword arguments for the solver.
@@ -141,12 +156,13 @@ class Regularizer(Base, abc.ABC):
         NameError
             If any of the solver keyword arguments are not valid.
         """
-        solver_args = inspect.getfullargspec(getattr(jaxopt, solver_name)).args
-        undefined_kwargs = set(solver_kwargs.keys()).difference(solver_args)
-        if undefined_kwargs:
-            raise NameError(
-                f"kwargs {undefined_kwargs} in solver_kwargs not a kwarg for jaxopt.{solver_name}!"
-            )
+        if not self._allow_custom_solvers:
+            solver_args = inspect.getfullargspec(solver).args
+            undefined_kwargs = set(solver_kwargs.keys()).difference(solver_args)
+            if undefined_kwargs:
+                raise NameError(
+                    f"kwargs {undefined_kwargs} in solver_kwargs not a kwarg for jaxopt.{solver}!"
+                )
 
     def instantiate_solver(
         self, loss: Callable, *args: Any, prox: Optional[Callable] = None, **kwargs: Any
@@ -200,7 +216,7 @@ class Regularizer(Base, abc.ABC):
             solver_kwargs.update(prox=prox)
         else:
             solver_kwargs = self.solver_kwargs
-        solver = getattr(jaxopt, self.solver_name)(fun=loss, **solver_kwargs)
+        solver = self.solver(fun=loss, **solver_kwargs)
 
         def solver_run(
             init_params: Tuple[DESIGN_INPUT_TYPE, jnp.ndarray], *run_args: jnp.ndarray
@@ -239,9 +255,10 @@ class UnRegularized(Regularizer):
     )
 
     def __init__(
-        self, solver_name: str = "GradientDescent", solver_kwargs: Optional[dict] = None
+        self, solver: Union[str, Callable] = "GradientDescent", solver_kwargs: Optional[dict] = None,
+        allow_custom_solvers: bool = False,
     ):
-        super().__init__(solver_name, solver_kwargs=solver_kwargs)
+        super().__init__(solver, solver_kwargs=solver_kwargs, allow_custom_solvers=allow_custom_solvers)
 
 
 class Ridge(Regularizer):
@@ -269,11 +286,12 @@ class Ridge(Regularizer):
 
     def __init__(
         self,
-        solver_name: str = "GradientDescent",
+        solver: Union[str, Callable] = "GradientDescent",
         solver_kwargs: Optional[dict] = None,
         regularizer_strength: float = 1.0,
+        allow_custom_solvers: bool = False,
     ):
-        super().__init__(solver_name, solver_kwargs=solver_kwargs)
+        super().__init__(solver, solver_kwargs=solver_kwargs, allow_custom_solvers=allow_custom_solvers)
         self.regularizer_strength = regularizer_strength
 
     def _penalization(
@@ -349,12 +367,13 @@ class ProxGradientRegularizer(Regularizer, abc.ABC):
 
     def __init__(
         self,
-        solver_name: str,
+        solver: Union[str, Callable],
         solver_kwargs: Optional[dict] = None,
         regularizer_strength: float = 1.0,
+        allow_custom_solvers: bool = False,
         **kwargs,
     ):
-        super().__init__(solver_name, solver_kwargs=solver_kwargs)
+        super().__init__(solver, solver_kwargs=solver_kwargs, allow_custom_solvers=allow_custom_solvers)
         self.regularizer_strength = regularizer_strength
 
     @abc.abstractmethod
@@ -406,11 +425,12 @@ class Lasso(ProxGradientRegularizer):
 
     def __init__(
         self,
-        solver_name: str = "ProximalGradient",
+        solver: Union[str, Callable] = "ProximalGradient",
         solver_kwargs: Optional[dict] = None,
         regularizer_strength: float = 1.0,
+        allow_custom_solvers: bool = False,
     ):
-        super().__init__(solver_name, solver_kwargs=solver_kwargs)
+        super().__init__(solver, solver_kwargs=solver_kwargs, allow_custom_solvers=allow_custom_solvers)
         self.regularizer_strength = regularizer_strength
 
     def _get_proximal_operator(
@@ -456,14 +476,16 @@ class GroupLasso(ProxGradientRegularizer):
 
     def __init__(
         self,
-        solver_name: str,
+        solver: Union[str, Callable],
         mask: Union[NDArray, jnp.ndarray],
         solver_kwargs: Optional[dict] = None,
         regularizer_strength: float = 1.0,
+        allow_custom_solvers: bool = False,
     ):
         super().__init__(
-            solver_name,
+            solver,
             solver_kwargs=solver_kwargs,
+            allow_custom_solvers=allow_custom_solvers
         )
         self.regularizer_strength = regularizer_strength
         self.mask = jnp.asarray(mask)

@@ -295,7 +295,7 @@ def poisson_observation_model():
 
 @pytest.fixture
 def ridge_regularizer():
-    return nmo.regularizer.Ridge(solver_name="LBFGS", regularizer_strength=0.1)
+    return nmo.regularizer.Ridge(solver="LBFGS", regularizer_strength=0.1)
 
 
 @pytest.fixture

@@ -536,7 +536,7 @@ for neu in range(count.shape[1]):
     print(f"fitting neuron {neu}...")
     count_neu = count[:, neu]
     model = nmo.glm.GLM(
-        regularizer=nmo.regularizer.Ridge(regularizer_strength=0.1, solver_name="LBFGS")
+        regularizer=nmo.regularizer.Ridge(regularizer_strength=0.1, solver="LBFGS")
     )
     model.fit(convolved_count, count_neu.restrict(convolved_count.time_support))
     models.append(model)

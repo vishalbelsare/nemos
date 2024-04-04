@@ -20,24 +20,27 @@ $$
 
 """
 
-from typing import Tuple
+from typing import Tuple, Callable, Any, Optional
 
 import jax.nn
 import matplotlib.pyplot as plt
 from jax import numpy as jnp
 
 import nemos as nmo
-from jaxopt.projection import projection_non_negative, projection_hyperplane
+from jaxopt.projection import projection_halfspace
 import numpy as np
 import jaxopt
 
 from nemos.base_class import DESIGN_INPUT_TYPE
+from nemos.regularizer import SolverRunner
 
 jax.config.update("jax_enable_x64", True)
-def mean_center(func):
+
+
+def min_max(func):
     def wrapper(self, *args, **kwargs):
         if "X" in kwargs:
-            kwargs["X"] = X - X.mean(axis=0)
+            kwargs["X"] = (X - X.min(axis=0)) / (X.max(axis=0) - X.min(axis=0))
         else:
             # assume X is first
             flat, struct = jax.tree_util.tree_flatten((args, kwargs))
@@ -47,7 +50,9 @@ def mean_center(func):
 
     return wrapper
 
+
 class ProjectedGradientReg(nmo.regularizer.UnRegularized):
+
     allowed_solvers = ["ProjectedGradient"]
 
     def __init__(
@@ -81,65 +86,68 @@ class ProjectedGradientGLM(nmo.glm.GLM):
     """
     def __init__(self,
                  observation_model=nmo.observation_models.PoissonObservations(inverse_link_function=lambda x: x),
-                 regularizer=ProjectedGradientReg(solver_kwargs=dict(projection=projection_hyperplane, tol=10**-12)),
+                 regularizer=ProjectedGradientReg(solver_kwargs=dict(projection=projection_halfspace, tol=10**-12)),
                  ):
         super().__init__(observation_model, regularizer)
         self._mean_rate = None
 
     @nmo.type_casting.support_pynapple(conv_type="jax")
     def _get_hyperplane_params(self, X, y):
-        a = jax.tree_map(lambda x: -jnp.max(x, axis=0), X)
-        b = jax.tree_map(lambda x: jnp.mean(x, axis=0, keepdims=True), y)
-
+        a = jax.tree_map(lambda x: jnp.hstack([-jnp.max(x, axis=0), jnp.array([-1])]), X)
+        b = jax.tree_map(lambda x: jnp.zeros((1, )), a)
         # check that the rate is non-negative if the condition is matched
-        assert nmo.utils.pytree_map_and_reduce(lambda x: jnp.all(jnp.dot(x, a) >= -b), all, X)
+        #assert nmo.utils.pytree_map_and_reduce(lambda x: jnp.all(jnp.dot(x, a) >= -b), all, X)
 
         return a, b
 
     def _check_params(self,params,data_type=None):
-        return super()._check_params((params, self.intercept_))
+        return super()._check_params((params[:-1], params[-1:]))
 
     def _check_input_and_params_consistency(self, params, X=None, y=None):
-        return super()._check_input_and_params_consistency((params, self.intercept_), X=X, y=y)
+        return super()._check_input_and_params_consistency((params[:-1], params[-1:]), X=X, y=y)
 
-    @mean_center
+    @min_max
     def fit(self, X, y, *args, init_params=None, **kwargs):
         # very important step, each feature should be mean centered, so that wi*xi has mean 0
         # and the mean of the counts corresponds to the mean of the counts
 
         #X = jax.tree_map(lambda x: x - x.mean(axis=0), X)
         # add the projection to the solver
-        self.intercept_ = jax.tree_map(lambda x: jnp.mean(x, axis=0, keepdims=True), y)
-        self.regularizer.solver_kwargs.update(dict(projection=projection_hyperplane))
+
+        self.regularizer.solver_kwargs.update(dict(projection=projection_halfspace))
         hyperparam = self._get_hyperplane_params(X, y)
-        init_params = self._initialize_parameters(X, y)[0]
+        init_params = np.hstack(self._initialize_parameters(X, y))
         return super().fit(X, y, hyperparam, *args, init_params=init_params, **kwargs)
 
     def _set_coef_and_intercept(self, params):
-        self.coef_ = params
+        self.coef_ = params[: -1]
+        self.intercept_ = params[-1:]
 
     def _get_coef_and_intercept(self):
-        return self.coef_
+        return jnp.hstack([self.coef_, self.intercept_])
 
     def _predict(
             self, params: DESIGN_INPUT_TYPE, X: jnp.ndarray
     ) -> jnp.ndarray:
         # ignore intercept
+        Ws = params[:-1]
+        bs = params[-1:]
         return self._observation_model.inverse_link_function(
             # First, multiply each feature by its corresponding coefficient,
             # then sum across all features and add the intercept, before
             # passing to the inverse link function
             nmo.tree_utils.pytree_map_and_reduce(
-                lambda w, x: jnp.einsum("k,tk->t", w, x), sum, params, X
+                lambda w, x: jnp.einsum("k,tk->t", w, x), sum, Ws, X
             )
-            + self.intercept_
+            + bs
         )
 
-    @mean_center
+    @min_max
     def predict(self, X: DESIGN_INPUT_TYPE) -> jnp.ndarray:
         return super().predict(X)
 
-    @mean_center
+
+    @min_max
     def score(self, X, y):
         return super().score(X, y)
 
@@ -153,9 +161,6 @@ x1, x2 = np.random.uniform(0, 1, size=(2, T))
 
 
 X = (bas1 + bas2)(x1, x2)
-
-
-X = X - X.mean(axis=0)
 
 
 weights = 10 * np.random.normal(size=X.shape[1])

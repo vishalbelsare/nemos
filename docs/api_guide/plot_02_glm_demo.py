@@ -96,7 +96,7 @@ observation_models = nmo.observation_models.PoissonObservations(jax.nn.softplus)
 
 # Observation model
 regularizer = nmo.regularizer.Ridge(
-    solver_name="LBFGS",
+    solver="LBFGS",
     regularizer_strength=0.1,
     solver_kwargs={"tol":10**-10}
 )
