@@ -7,17 +7,6 @@ import jax.numpy as jnp
 
 jax.config.update("jax_debug_nans", True)
 
-
-def _batch_generator(batch_size, *args, **kwargs):
-    """Yield mini-batches from the dataset."""
-    num_samples = _get_n_samples(*args, **kwargs)
-    indices = np.arange(num_samples)
-    np.random.shuffle(indices)  # Shuffle the data indices
-    for start_idx in range(0, num_samples, batch_size):
-        end_idx = min(start_idx + batch_size, num_samples)
-        batch_indices = indices[start_idx:end_idx]
-        yield _slice_args(batch_indices, *args, **kwargs)
-
 def _slice_args(idx, *args, **kwargs):
     is_array = jax.tree_map(lambda x: isinstance(x, jax.numpy.ndarray), (args, kwargs))
     return jax.tree_map(lambda arr, bl: arr[idx] if bl else arr, (args, kwargs), is_array)
@@ -29,6 +18,15 @@ def _get_n_samples(*args, **kwargs):
     return arrays[0].shape[0]
 
 
+def _batch_generator(batch_size, num_samples, *args, **kwargs):
+    """Yield mini-batches from the dataset."""
+    indices = np.arange(num_samples)
+    np.random.shuffle(indices)  # Shuffle the data indices
+    for start_idx in range(0, num_samples, batch_size):
+        end_idx = min(start_idx + batch_size, num_samples)
+        batch_indices = indices[start_idx:end_idx]
+        yield _slice_args(batch_indices, *args, **kwargs)
+
 class BatchSolver:
     def __init__(self, optimizer, batch_size=32, max_iter=1000):
         self._optimizer = optimizer
@@ -38,11 +36,12 @@ class BatchSolver:
         self._max_iter = max_iter
 
     def run(self, init_params, *args, **kwargs):
-        # minibach
+        num_samples = _get_n_samples(*args, **kwargs)
+        # mini-batch
         opt_state = self._solver.init_state(init_params, *args, **kwargs)
         params = init_params
         for epoch in range(self._max_iter):
-            for aa, kk in _batch_generator(self.batch_size, *args, **kwargs):
+            for aa, kk in _batch_generator(self.batch_size, num_samples, *args, **kwargs):
                 params, opt_state = self.update(params, opt_state, *aa, **kk)
         return params, opt_state
 
@@ -89,7 +88,6 @@ model_batch = nmo.glm.GLM(regularizer=
 )
 np.random.seed(123)
 model_batch.fit(X, y)
-
 
 
 fig, axs = plt.subplots(1, 2)
