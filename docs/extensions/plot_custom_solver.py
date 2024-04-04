@@ -1,11 +1,11 @@
+"""Batching any jaxopt solver."""
+
 import jaxopt
 import nemos as nmo
 import numpy as np
 import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
-
-jax.config.update("jax_debug_nans", True)
 
 def _slice_args(idx, *args, **kwargs):
     is_array = jax.tree_map(lambda x: isinstance(x, jax.numpy.ndarray), (args, kwargs))
