@@ -576,7 +576,7 @@ class GLM(BaseRegressor):
         self.observation_model.estimate_scale(self._predict(params, data))
 
         if tree_utils.pytree_map_and_reduce(
-                lambda x: jnp.any(jnp.isnan(x)), any, params
+            lambda x: jnp.any(jnp.isnan(x)), any, params
         ):
             raise ValueError(
                 "Solver returned at least one NaN parameter, so solution is invalid!"
@@ -590,23 +590,24 @@ class GLM(BaseRegressor):
         self.solver_state = state
         return self
 
-    def _set_coef_and_intercept(self, params):
-        """Store the fitted parameters.
+    def _get_coef_and_intercept(self):
+        """Pack coef_ and intercept_  into a params pytree.
 
-        This method should be overwritten in case the parameter structure changes.
+        This method should be overwritten in case the parameter structure changes,
+        or if new regression models will have a different parameter structure.
+        """
+        # Retrieve parameter tree
+        return self.coef_, self.intercept_
+
+    def _set_coef_and_intercept(self, params):
+        """Unpack and store params pytree to coef_ and intercept_.
+
+        This method should be overwritten in case the parameter structure changes,
+        or if new regression models will have a different parameter structure.
         """
         # Store parameters
         self.coef_: DESIGN_INPUT_TYPE = params[0]
         self.intercept_: jnp.ndarray = params[1]
-
-    def _get_coef_and_intercept(self):
-        """Store the fitted parameters.
-
-        This method should be overwritten in case the parameter structure changes.
-        """
-        # Store parameters
-        return (self.coef_, self.intercept_)
-
 
     def simulate(
         self,
