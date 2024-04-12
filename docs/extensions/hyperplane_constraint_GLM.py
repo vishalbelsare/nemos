@@ -101,7 +101,7 @@ class ProjectedGradientGLM(nmo.glm.GLM):
         return a, b
 
     def _check_params(self,params,data_type=None):
-        return super()._check_params((params[:-1], params[-1:]))
+        return jnp.hstack(super()._check_params((params[:-1], params[-1:])))
 
     def _check_input_and_params_consistency(self, params, X=None, y=None):
         return super()._check_input_and_params_consistency((params[:-1], params[-1:]), X=X, y=y)
