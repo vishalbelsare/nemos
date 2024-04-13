@@ -675,9 +675,10 @@ class Basis(abc.ABC):
 
         Examples
         --------
-        >>> from nemos import basis
-        >>> import numpy as np
         >>> import matplotlib.pyplot as plt
+        >>> import numpy as np
+        >>>
+        >>> from nemos import basis
         >>>
         >>> np.random.seed(123)
         >>> bas = basis.RaisedCosineBasisLinear(2) * basis.RaisedCosineBasisLinear(3) +  basis.BSplineBasis(4)
