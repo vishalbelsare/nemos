@@ -652,7 +652,7 @@ class Basis(abc.ABC):
             result = result * self
         return result
 
-    def get_kernel(self, coef_: NDArray, n_samples: int) -> List:
+    def get_responses(self, coef_: NDArray, n_samples: int) -> List:
         """
         Compute the response kernel on a grid equi-spaced samples.
 
@@ -682,7 +682,7 @@ class Basis(abc.ABC):
         >>>
         >>> np.random.seed(123)
         >>> bas = basis.RaisedCosineBasisLinear(2) * basis.RaisedCosineBasisLinear(3) +  basis.BSplineBasis(4)
-        >>> kernels = bas.get_kernel(np.random.normal(size=bas.n_basis_funcs), 50)
+        >>> kernels = bas.get_responses(np.random.normal(size=bas.n_basis_funcs), 50)
         >>>
         >>> fig, axs = plt.subplots(1, 2, figsize=(5, 3))
         >>> axs[0].set_title("response 2D basis")
@@ -699,10 +699,10 @@ class Basis(abc.ABC):
             )
         kernel = []
         if isinstance(self, AdditiveBasis):
-            kernel += self._basis1.get_kernel(
+            kernel += self._basis1.get_responses(
                 coef_[: self._basis1.n_basis_funcs], n_samples
             )
-            kernel += self._basis2.get_kernel(
+            kernel += self._basis2.get_responses(
                 coef_[self._basis1.n_basis_funcs :], n_samples
             )
         else:
