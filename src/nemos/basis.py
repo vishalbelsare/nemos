@@ -696,8 +696,8 @@ class Basis(abc.ABC):
                              f"{self.n_basis_funcs}, `coef_` has {coef_.shape[0]} elements instead!")
         kernel = []
         if isinstance(self, AdditiveBasis):
-            kernel += (self._basis1.get_kernel(coef_[:self._basis1.n_basis_funcs], n_samples))
-            kernel += (self._basis2.get_kernel(coef_[self._basis1.n_basis_funcs:], n_samples))
+            kernel += self._basis1.get_kernel(coef_[:self._basis1.n_basis_funcs], n_samples)
+            kernel += self._basis2.get_kernel(coef_[self._basis1.n_basis_funcs:], n_samples)
         else:
             res = self.evaluate_on_grid(*(n_samples, )*self._n_input_dimensionality)
             ker = np.dot(res[-1], coef_)
