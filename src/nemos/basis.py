@@ -654,7 +654,7 @@ class Basis(abc.ABC):
 
     def get_responses(self, coef_: NDArray, n_samples: int) -> List:
         """
-        Compute the response kernel on a grid equi-spaced samples.
+        Compute the response kernel (weighted sum of basis) on a grid equi-spaced samples.
 
         Evaluate each additive component of the bass on a uniformly spaced grid and multiply
         by the coefficient. The function returns a list of tuple, containing the grid of
