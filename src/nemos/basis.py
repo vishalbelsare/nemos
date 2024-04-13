@@ -685,9 +685,9 @@ class Basis(abc.ABC):
         >>> kernels = bas.get_kernel(np.random.normal(size=bas.n_basis_funcs), 50)
         >>>
         >>> fig, axs = plt.subplots(1, 2, figsize=(5, 3))
-        >>> axs[0].set_title("response 1")
+        >>> axs[0].set_title("response 2D basis")
         >>> axs[0].contourf(*kernels[0])
-        >>> axs[1].set_title("response 2")
+        >>> axs[1].set_title("response BSpline")
         >>> axs[1].plot(*kernels[1])
         >>> plt.tight_layout()
         """
