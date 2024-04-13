@@ -692,14 +692,20 @@ class Basis(abc.ABC):
         """
         coef_ = np.asarray(coef_)
         if coef_.shape[0] != self.n_basis_funcs:
-            raise ValueError(f"Number of coefficients must match `n_basis_funcs`. `n_basis_funcs` is "
-                             f"{self.n_basis_funcs}, `coef_` has {coef_.shape[0]} elements instead!")
+            raise ValueError(
+                f"Number of coefficients must match `n_basis_funcs`. `n_basis_funcs` is "
+                f"{self.n_basis_funcs}, `coef_` has {coef_.shape[0]} elements instead!"
+            )
         kernel = []
         if isinstance(self, AdditiveBasis):
-            kernel += self._basis1.get_kernel(coef_[:self._basis1.n_basis_funcs], n_samples)
-            kernel += self._basis2.get_kernel(coef_[self._basis1.n_basis_funcs:], n_samples)
+            kernel += self._basis1.get_kernel(
+                coef_[: self._basis1.n_basis_funcs], n_samples
+            )
+            kernel += self._basis2.get_kernel(
+                coef_[self._basis1.n_basis_funcs :], n_samples
+            )
         else:
-            res = self.evaluate_on_grid(*(n_samples, )*self._n_input_dimensionality)
+            res = self.evaluate_on_grid(*(n_samples,) * self._n_input_dimensionality)
             ker = np.dot(res[-1], coef_)
             kernel.append((*res[:-1], ker))
         return kernel
