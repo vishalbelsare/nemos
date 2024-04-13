@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import abc
 import warnings
-from typing import Callable, Generator, Literal, Optional, Tuple, Union
+from typing import Callable, Generator, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import scipy.linalg
@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 
-def __dir__() -> list[str]:
+def __dir__() -> List[str]:
     return __all__
 
 
@@ -583,21 +583,40 @@ class Basis(abc.ABC):
         """
         return AdditiveBasis(self, other)
 
-    def __mul__(self, other: Basis) -> MultiplicativeBasis:
+    def __mul__(self, other: Union[Basis, int]) -> MultiplicativeBasis:
         """
         Multiply two Basis objects together.
 
         Parameters
         ----------
         other
-            The other Basis object to multiply.
+            The other Basis object to multiply, or an integer. If an integer
+            is passed, then the basis is added `other` times to itself.
 
         Returns
         -------
         :
             The resulting Basis object.
+
+        Examples
+        --------
+        >>> from nemos import basis
+        >>> import numpy as np
+        >>>
+        >>> bas = basis.BSplineBasis(10)
+        >>> bas_times_other = bas * basis.MSplineBasis(10)
+        >>> bas_times_2 = bas * 2
+        >>> # assert equality
+        >>> x = np.linspace(0, 1, 10)
+        >>> assert np.all(bas_times_2(x, x) == (bas + bas)(x, x))
         """
-        return MultiplicativeBasis(self, other)
+        if isinstance(other, int):
+            result = self
+            for _ in range(other - 1):
+                result = result + self
+            return result
+        else:
+            return MultiplicativeBasis(self, other)
 
     def __pow__(self, exponent: int) -> MultiplicativeBasis:
         """Exponentiation of a Basis object.
@@ -632,6 +651,58 @@ class Basis(abc.ABC):
         for _ in range(exponent - 1):
             result = result * self
         return result
+
+    def get_kernel(self, coef_: NDArray, n_samples: int) -> List:
+        """
+        Compute the response kernel on a grid equi-spaced samples.
+
+        Evaluate each additive component of the bass on a uniformly spaced grid and multiply
+        by the coefficient. The function returns a list of tuple, containing the grid of
+        equi-spaced points, and the basis multiplied by the coefficients.
+
+        Parameters
+        ----------
+        coef_:
+            A 1D array-like containing the weights for each basis element.
+        n_samples:
+            The number of samples for constructing the equi-spaced grid of points over
+            which each additive component of the basis will be evaluated.
+
+        Returns
+        -------
+            The grid of equi-spaced points and the weighted sum of the basis at those points
+            for each additive component.
+
+        Examples
+        --------
+        >>> from nemos import basis
+        >>> import numpy as np
+        >>> import matplotlib.pyplot as plt
+        >>>
+        >>> np.random.seed(123)
+        >>> bas = basis.RaisedCosineBasisLinear(2) * basis.RaisedCosineBasisLinear(3) +  basis.BSplineBasis(4)
+        >>> kernels = bas.get_kernel(np.random.normal(size=bas.n_basis_funcs), 50)
+        >>>
+        >>> fig, axs = plt.subplots(1, 2, figsize=(5, 3))
+        >>> axs[0].set_title("response 1")
+        >>> axs[0].contourf(*kernels[0])
+        >>> axs[1].set_title("response 2")
+        >>> axs[1].plot(*kernels[1])
+        >>> plt.tight_layout()
+        """
+        coef_ = np.asarray(coef_)
+        if coef_.shape[0] != self.n_basis_funcs:
+            raise ValueError(f"Number of coefficients must match `n_basis_funcs`. `n_basis_funcs` is "
+                             f"{self.n_basis_funcs}, `coef_` has {coef_.shape[0]} elements instead!")
+        kernel = []
+        if isinstance(self, AdditiveBasis):
+            kernel += (self._basis1.get_kernel(coef_[:self._basis1.n_basis_funcs], n_samples))
+            kernel += (self._basis2.get_kernel(coef_[self._basis1.n_basis_funcs:], n_samples))
+        else:
+            res = self.evaluate_on_grid(*(n_samples, )*self._n_input_dimensionality)
+            ker = np.dot(res[-1], coef_)
+            kernel.append((*res[:-1], ker))
+        return kernel
 
 
 class AdditiveBasis(Basis):
