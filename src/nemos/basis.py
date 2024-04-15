@@ -652,7 +652,66 @@ class Basis(abc.ABC):
             result = result * self
         return result
 
-    def get_responses(self, coef_: NDArray, n_samples: int) -> List:
+    def _count_additive(self) -> int:
+        """
+        Count the number of additive basis are in self.
+
+        Returns
+        -------
+        cnt:
+           The number of additive components.
+        """
+        cnt = 0
+        if isinstance(self, AdditiveBasis):
+            cnt += self._basis1._count_additive()
+            cnt += self._basis2._count_additive()
+        else:
+            cnt += 1
+        return cnt
+
+    def _count_additive_n_basis(self) -> List[int]:
+        """
+        Count the number of basis for each additive component of basis.
+
+        Returns
+        -------
+        cnt:
+            A list integers. cnt[i] is the number of basis of the  i-th additive
+            component of basis. `len(cnts)` is the number of additive components in self.
+        """
+        cnt = []
+        if isinstance(self, AdditiveBasis):
+            cnt += self._basis1._count_additive_n_basis()
+            cnt += self._basis2._count_additive_n_basis()
+        else:
+            cnt += [self.n_basis_funcs]
+        return cnt
+
+    def _check_coef_size(self, coef_: NDArray, input_repeats: List[int]):
+        """
+        Check that the number of coefficient matches expectation.
+
+        Parameters
+        ----------
+        coef_:
+            Vector of coefficients.
+
+        input_repeats:
+            How many times each additive component input is repeated.
+
+        Raises
+        -------
+        ValueError
+            If the expected number of coefficient doesnt matches expectation.
+        """
+        expected_coeffs = np.multiply(input_repeats, self._count_additive_n_basis()).sum()
+        if coef_.shape[0] != expected_coeffs:
+            raise ValueError(
+                f"Number of coefficients does not add up. This basis, for the provided input repeats,"
+                f" expects {expected_coeffs} coefficients, `coef_` has {coef_.shape[0]} elements instead!"
+            )
+
+    def get_weighted_basis(self, coef_: NDArray, n_samples: int, input_repeats: Optional[List] = None) -> List:
         """
         Compute the response kernel (weighted sum of basis) on a grid equi-spaced samples.
 
@@ -667,6 +726,9 @@ class Basis(abc.ABC):
         n_samples:
             The number of samples for constructing the equi-spaced grid of points over
             which each additive component of the basis will be evaluated.
+        input_repeats:
+            List of integers. How many times each additive component is repeated in the
+            coefficient vector. Default is one time per component.
 
         Returns
         -------
@@ -682,7 +744,7 @@ class Basis(abc.ABC):
         >>>
         >>> np.random.seed(123)
         >>> bas = basis.RaisedCosineBasisLinear(2) * basis.RaisedCosineBasisLinear(3) +  basis.BSplineBasis(4)
-        >>> kernels = bas.get_responses(np.random.normal(size=bas.n_basis_funcs), 50)
+        >>> kernels = bas.get_weighted_basis(np.random.normal(size=bas.n_basis_funcs), 50)
         >>>
         >>> fig, axs = plt.subplots(1, 2, figsize=(5, 3))
         >>> axs[0].set_title("response 2D basis")
@@ -691,24 +753,27 @@ class Basis(abc.ABC):
         >>> axs[1].plot(*kernels[1])
         >>> plt.tight_layout()
         """
+        if input_repeats is None:
+            input_repeats = [1] * self._count_additive()
+
         coef_ = np.asarray(coef_)
-        if coef_.shape[0] != self.n_basis_funcs:
-            raise ValueError(
-                f"Number of coefficients must match `n_basis_funcs`. `n_basis_funcs` is "
-                f"{self.n_basis_funcs}, `coef_` has {coef_.shape[0]} elements instead!"
-            )
+        self._check_coef_size(coef_, input_repeats)
         kernel = []
         if isinstance(self, AdditiveBasis):
-            kernel += self._basis1.get_responses(
-                coef_[: self._basis1.n_basis_funcs], n_samples
+            split_idx = self._basis1._count_additive()
+            kernel += self._basis1.get_weighted_basis(
+                coef_[: self._basis1.n_basis_funcs], n_samples, input_repeats[:split_idx]
             )
-            kernel += self._basis2.get_responses(
-                coef_[self._basis1.n_basis_funcs :], n_samples
+            kernel += self._basis2.get_weighted_basis(
+                coef_[self._basis1.n_basis_funcs :], n_samples, input_repeats[split_idx:]
             )
         else:
             res = self.evaluate_on_grid(*(n_samples,) * self._n_input_dimensionality)
-            ker = np.dot(res[-1], coef_)
-            kernel.append((*res[:-1], ker))
+            # reshape the coeff appropriately
+            ker = np.dot(res[-1], coef_.reshape(input_repeats[0], -1).T)
+            # loop over the repeats and store
+            for i in range(input_repeats[0]):
+                kernel.append((*res[:-1], ker[..., i]))
         return kernel
 
 
