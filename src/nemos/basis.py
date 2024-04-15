@@ -687,7 +687,7 @@ class Basis(abc.ABC):
             cnt += [self.n_basis_funcs]
         return cnt
 
-    def _check_coef_size(self, coef_: NDArray, input_repeats: List[int]):
+    def _check_coef_size(self, coef_: NDArray, component_repeats: List[int]):
         """
         Check that the number of coefficient matches expectation.
 
@@ -696,22 +696,22 @@ class Basis(abc.ABC):
         coef_:
             Vector of coefficients.
 
-        input_repeats:
-            How many times each additive component input is repeated.
+        component_repeats:
+            How many times each additive component is repeated in `coef_`.
 
         Raises
         -------
         ValueError
             If the expected number of coefficient doesnt matches expectation.
         """
-        expected_coeffs = np.multiply(input_repeats, self._count_additive_n_basis()).sum()
+        expected_coeffs = np.multiply(component_repeats, self._count_additive_n_basis()).sum()
         if coef_.shape[0] != expected_coeffs:
             raise ValueError(
                 f"Number of coefficients does not add up. This basis, for the provided input repeats,"
                 f" expects {expected_coeffs} coefficients, `coef_` has {coef_.shape[0]} elements instead!"
             )
 
-    def get_weighted_basis(self, coef_: NDArray, n_samples: int, input_repeats: Optional[List] = None) -> List:
+    def get_weighted_basis(self, coef_: NDArray, n_samples: int, component_repeats: Optional[List] = None) -> List:
         """
         Compute the response kernel (weighted sum of basis) on a grid equi-spaced samples.
 
@@ -726,9 +726,9 @@ class Basis(abc.ABC):
         n_samples:
             The number of samples for constructing the equi-spaced grid of points over
             which each additive component of the basis will be evaluated.
-        input_repeats:
-            List of integers. How many times each additive component is repeated in the
-            coefficient vector. Default is one time per component.
+        component_repeats:
+            List of integers. How many times each additive element of the basis is repeated in coef_.
+            Default is one time per element.
 
         Returns
         -------
@@ -753,26 +753,26 @@ class Basis(abc.ABC):
         >>> axs[1].plot(*kernels[1])
         >>> plt.tight_layout()
         """
-        if input_repeats is None:
-            input_repeats = [1] * self._count_additive()
+        if component_repeats is None:
+            component_repeats = [1] * self._count_additive()
 
         coef_ = np.asarray(coef_)
-        self._check_coef_size(coef_, input_repeats)
+        self._check_coef_size(coef_, component_repeats)
         kernel = []
         if isinstance(self, AdditiveBasis):
             split_idx = self._basis1._count_additive()
             kernel += self._basis1.get_weighted_basis(
-                coef_[: self._basis1.n_basis_funcs], n_samples, input_repeats[:split_idx]
+                coef_[: self._basis1.n_basis_funcs], n_samples, component_repeats[:split_idx]
             )
             kernel += self._basis2.get_weighted_basis(
-                coef_[self._basis1.n_basis_funcs :], n_samples, input_repeats[split_idx:]
+                coef_[self._basis1.n_basis_funcs :], n_samples, component_repeats[split_idx:]
             )
         else:
             res = self.evaluate_on_grid(*(n_samples,) * self._n_input_dimensionality)
             # reshape the coeff appropriately
-            ker = np.dot(res[-1], coef_.reshape(input_repeats[0], -1).T)
+            ker = np.dot(res[-1], coef_.reshape(component_repeats[0], -1).T)
             # loop over the repeats and store
-            for i in range(input_repeats[0]):
+            for i in range(component_repeats[0]):
                 kernel.append((*res[:-1], ker[..., i]))
         return kernel
 
