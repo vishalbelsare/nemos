@@ -1,30 +1,58 @@
 # .readthedocs.yaml
 # Read the Docs configuration file
-# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
 
 # Required
 version: 2
 
-# Set the version of Python and other tools you might need
+# The documentation is built on Flatiron's Jenkins (see jenkins/Jenkinsfile),
+# which executes the notebooks, runs htmlproofer, publishes the rendered HTML to
+# github.com/flatironinstitute/nemos-documentation, and then triggers a build
+# here. This build only fetches that HTML: nothing is executed on Read the Docs,
+# so the build time limit no longer constrains the documentation.
 build:
   os: ubuntu-22.04
+  # Unused below, but build.tools is required whenever build.commands replaces
+  # the default build.
   tools:
-    python: "3.10"
+    python: "3.12"
+  commands:
+    - |
+      set -ex
 
-  apt_packages:
-    - ffmpeg
+      # Jenkins publishes under these three prefixes, keyed off its own
+      # BRANCH_NAME/TAG_NAME. READTHEDOCS_VERSION is a slug ("latest" for main),
+      # so branches and tags resolve through the git identifier instead; pull
+      # requests have no identifier and use the slug, which is the PR number.
+      case "$READTHEDOCS_VERSION_TYPE" in
+        external) rel="pulls/$READTHEDOCS_VERSION" ;;
+        tag)      rel="tags/$READTHEDOCS_GIT_IDENTIFIER" ;;
+        *)        rel="branch/$READTHEDOCS_GIT_IDENTIFIER" ;;
+      esac
 
-mkdocs:
-  configuration: mkdocs.yml
+      # Partial and sparse: only the blobs for this one version are fetched, so
+      # the clone stays cheap as published versions accumulate in that repo.
+      git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/flatironinstitute/nemos-documentation.git /tmp/published
+      git -C /tmp/published sparse-checkout set "docs/$rel"
 
-# Optionally declare the Python requirements required to build your docs
-python:
-   install:
-   - method: pip
-     path: .
-     extra_requirements:
-       - docs
+      src="/tmp/published/docs/$rel"
 
-formats:
-  - pdf
-  - htmlzip
+      if [ ! -f "$src/.nemos-commit" ]; then
+        echo "No published documentation at docs/$rel."
+        echo "The Jenkins docs build for this branch has to publish it first."
+        exit 1
+      fi
+
+      # Refusing to serve a tree built from a different commit is the whole
+      # point of the marker: Jenkins triggers this build after publishing, and
+      # anything that arrives out of order fails here instead of going live.
+      published=$(cat "$src/.nemos-commit")
+      if [ "$published" != "$READTHEDOCS_GIT_COMMIT_HASH" ]; then
+        echo "Published documentation is for commit $published,"
+        echo "but this build is for $READTHEDOCS_GIT_COMMIT_HASH."
+        echo "The Jenkins build for this commit will trigger a new build when it finishes."
+        exit 1
+      fi
+
+      mkdir -p "$READTHEDOCS_OUTPUT/html"
+      cp -rp "$src/." "$READTHEDOCS_OUTPUT/html"

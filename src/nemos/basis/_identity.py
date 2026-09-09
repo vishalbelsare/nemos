@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional, Tuple
+
+import jax.numpy as jnp
+import numpy as np
+from numpy._typing import ArrayLike
+from numpy.typing import NDArray
+
+if TYPE_CHECKING:
+    from pynapple import Tsd, TsdFrame, TsdTensor
+
+from ..type_casting import support_pynapple
+from ..typing import FeatureMatrix
+from ._basis import Basis, check_transform_input
+from ._basis_mixin import AtomicBasisMixin
+from ._check_basis import _check_input_dimensionality, _has_zero_samples
+
+
+class IdentityBasis(AtomicBasisMixin, Basis):
+    """
+    Base class for the Identity basis.
+
+    This basis should be used when one wants to incorporate raw inputs
+    as part of a composite basis.
+
+    Parameters
+    ----------
+    n_basis_funcs :
+        The number of basis functions.
+    label :
+        The label of the basis, intended to be descriptive of the task variable being processed.
+        For example: velocity, position, spike_counts.
+    """
+
+    def __init__(
+        self,
+        n_basis_funcs: int,
+        label: Optional[str] = None,
+    ) -> None:
+        self._n_inputs = 1
+        AtomicBasisMixin.__init__(self, n_basis_funcs=n_basis_funcs, label=label)
+        Basis.__init__(
+            self,
+        )
+
+    @support_pynapple(conv_type="numpy")
+    @check_transform_input
+    def evaluate(
+        self, sample_pts: ArrayLike | Tsd | TsdFrame | TsdTensor
+    ) -> FeatureMatrix:
+        """
+        Return the samples as a 2D array.
+
+        Parameters
+        ----------
+        sample_pts:
+            Array of samples. The shape can be arbitrary, as long as the first axis is the
+            sample axis.
+
+        Returns
+        -------
+        :
+            The samples with an extra axis, the n_basis_funcs axis which is = 1.
+
+        """
+        if self.bounds is None:
+            vmin = jnp.nanmin(sample_pts, axis=0)
+            vmax = jnp.nanmax(sample_pts, axis=0)
+        elif isinstance(self.bounds[0], (tuple, list)):
+            vmin = jnp.asarray([b[0] for b in self.bounds])
+            vmax = jnp.asarray([b[1] for b in self.bounds])
+        else:
+            vmin, vmax = self.bounds[0], self.bounds[1]
+        sample_pts = jnp.where(
+            (sample_pts < vmin) | (sample_pts > vmax),
+            getattr(self, "fill_value", jnp.nan),
+            sample_pts,
+        )
+        return sample_pts[..., np.newaxis]
+
+    def evaluate_on_grid(self, n_samples: int) -> Tuple[NDArray, NDArray]:
+        """Evaluate the basis set on a grid of equi-spaced sample points.
+
+        Parameters
+        ----------
+        n_samples :
+            The number of points in the uniformly spaced grid. A higher number of
+            samples will result in a more detailed visualization of the basis functions.
+
+        Returns
+        -------
+        X :
+            Array of shape (n_samples,) containing the equi-spaced sample
+            points where we've evaluated the basis.
+        basis_funcs :
+            The equi-spaced sample points X as a 2D array (n_samples, 1).
+        """
+        return super().evaluate_on_grid(n_samples)
+
+    def _check_n_basis_min(self):
+        """No checks necessary."""
+        pass
+
+    @property
+    def n_basis_funcs(self) -> tuple | None:
+        """Number of basis functions (read-only)."""
+        return super().n_basis_funcs
+
+
+class HistoryBasis(AtomicBasisMixin, Basis):
+    """
+    Base class for history effects.
+
+    This basis should be used when one wants to use input history
+    as a predictor.
+
+    Parameters
+    ----------
+    n_basis_funcs :
+        The number of basis functions (which corresponds to the length of the history window).
+    label :
+        The label of the basis, intended to be descriptive of the task variable being processed.
+        For example: velocity, position, spike_counts.
+    """
+
+    def __init__(
+        self,
+        n_basis_funcs: int,
+        label: Optional[str] = None,
+    ) -> None:
+        self._n_inputs = 1
+        AtomicBasisMixin.__init__(self, n_basis_funcs=n_basis_funcs, label=label)
+        Basis.__init__(
+            self,
+        )
+
+    @support_pynapple(conv_type="numpy")
+    @check_transform_input
+    def evaluate(
+        self, sample_pts: ArrayLike | Tsd | TsdFrame | TsdTensor
+    ) -> FeatureMatrix:
+        r"""
+        Return an identity matrix of shape ``(len(samples), n_basis_funcs)``.
+
+        The output is the convolutional kernels for spike history.
+
+        Parameters
+        ----------
+        sample_pts:
+            Array of samples.
+
+        Returns
+        -------
+        :
+            Identity matrix of shape ``(*samples.shape, n_basis_funcs)``.
+
+        """
+        # allow only array with one non-trivial axis: (n_samples,1,1,1,1,...) are ok.
+        squeeze = tuple([k + 1 for (k, s) in enumerate(sample_pts.shape[1:]) if s == 1])
+        sample_pts = jnp.squeeze(jnp.asarray(sample_pts), axis=squeeze)
+        if sample_pts.ndim != 1:
+            raise ValueError("`evaluate` for HistoryBasis allows 1D input only.")
+        # this is called by set kernel.
+        return jnp.eye(jnp.asarray(sample_pts).shape[0], self.n_basis_funcs)
+
+    def evaluate_on_grid(self, n_samples: int) -> Tuple[NDArray, NDArray]:
+        """Evaluate the basis set on a grid of equi-spaced sample points.
+
+        Parameters
+        ----------
+        n_samples :
+            The number of points used to construct the identity matrix.
+
+        Returns
+        -------
+        X :
+            Array of shape (n_samples,) containing a equi-spaced samples between 0 and 1.
+        basis_funcs :
+            The identity matrix of shape, i.e. ``np.eye(window_size, n_samples)``.
+        """
+        _check_input_dimensionality(self, (n_samples,))
+        if _has_zero_samples((n_samples,)):
+            raise ValueError("All sample counts provided must be greater than zero.")
+        return np.linspace(0, 1, n_samples), np.eye(n_samples, self.n_basis_funcs)
+
+    def _check_n_basis_min(self):
+        """No checks necessary."""
+        pass
+
+    @property
+    def n_basis_funcs(self) -> tuple | None:
+        """Read-only property for history basis."""
+        return super().n_basis_funcs

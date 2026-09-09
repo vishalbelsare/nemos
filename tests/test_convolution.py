@@ -1,6 +1,10 @@
+import itertools
+import logging
 from contextlib import nullcontext as does_not_raise
+from unittest.mock import Mock
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pynapple as nap
 import pytest
@@ -8,21 +12,34 @@ import pytest
 from nemos import convolve, utils
 
 
+def _get_sample_axis_len(time_series, axis=0):
+    return jax.tree_util.tree_leaves(time_series)[0].shape[axis]
+
+
+@pytest.mark.parametrize("use_fft", [False, True])
 class TestShiftTimeAxisAndConvolve:
 
     @pytest.mark.parametrize(
         "time_series, check_func, axis",
         [
             (np.zeros((1, 20)), lambda x: x.ndim == 3, 1),
+            (np.zeros((1, 20)), lambda x: x.ndim == 3, -1),
             (np.zeros((20,)), lambda x: x.ndim == 2, 0),
             (np.zeros((20, 1)), lambda x: x.ndim == 3, 0),
             (np.zeros((1, 20, 1)), lambda x: x.ndim == 4, 0),
+            (np.zeros((1, 20, 1)), lambda x: x.ndim == 4, -3),
         ],
     )
-    def test_output_ndim(self, time_series, check_func, axis):
+    def test_output_ndim(self, time_series, check_func, axis, use_fft):
         """Check that the output dimensionality matches expectation."""
         res = convolve._shift_time_axis_and_convolve(
-            time_series, np.zeros((1, 1)), axis=axis
+            time_series,
+            np.zeros((1, 1)),
+            axis=axis,
+            batch_size_channels=1,
+            batch_size_basis=1,
+            batch_size_samples=_get_sample_axis_len(time_series, axis=axis),
+            use_fft=use_fft,
         )
         if not utils.pytree_map_and_reduce(check_func, all, res):
             raise ValueError("Output doesn't match expected structure")
@@ -34,14 +51,20 @@ class TestShiftTimeAxisAndConvolve:
             (np.zeros((1, 20, 1)), 1, (1, 20, 1, 1)),
         ],
     )
-    def test_output_shape(self, time_series, axis, output_shape):
+    def test_output_shape(self, time_series, axis, output_shape, use_fft):
         """Check that the output shape matches expectation."""
 
         def check_func(x):
             return x.shape == output_shape
 
         res = convolve._shift_time_axis_and_convolve(
-            time_series, np.zeros((1, 1)), axis=axis
+            time_series,
+            np.zeros((1, 1)),
+            axis=axis,
+            batch_size_channels=1,
+            batch_size_basis=1,
+            batch_size_samples=_get_sample_axis_len(time_series, axis=axis),
+            use_fft=use_fft,
         )
         if not utils.pytree_map_and_reduce(check_func, all, res):
             raise ValueError("Output  number of neuron doesn't match input.")
@@ -55,14 +78,20 @@ class TestShiftTimeAxisAndConvolve:
         ],
     )
     @pytest.mark.parametrize("basis_matrix", [np.zeros((1, 1)), np.zeros((1, 2))])
-    def test_output_num_basis(self, time_series, basis_matrix, axis):
+    def test_output_num_basis(self, time_series, basis_matrix, axis, use_fft):
         """Check that the number of features in input and output matches."""
 
         def check_func(conv):
             return basis_matrix.shape[-1] == conv.shape[-1]
 
         res = convolve._shift_time_axis_and_convolve(
-            time_series, basis_matrix, axis=axis
+            time_series,
+            basis_matrix,
+            axis=axis,
+            batch_size_channels=1,
+            batch_size_basis=1,
+            batch_size_samples=_get_sample_axis_len(time_series, axis=axis),
+            use_fft=use_fft,
         )
         if not utils.pytree_map_and_reduce(check_func, all, res):
             raise ValueError("Output  number of neuron doesn't match input.")
@@ -73,8 +102,8 @@ class TestShiftTimeAxisAndConvolve:
     @pytest.mark.parametrize(
         "trial_counts", [np.random.normal(size=(2, 10, 3)) for _ in range(2)]
     )
-    def test_valid_convolution_output(self, basis_matrix, trial_counts):
-        """Check output matches numpy convolve."""
+    def test_valid_convolution_output(self, basis_matrix, trial_counts, use_fft):
+        """Check output matches numpy convolve for both the direct and FFT paths."""
         numpy_out = np.zeros(
             (
                 trial_counts.shape[0],
@@ -91,7 +120,15 @@ class TestShiftTimeAxisAndConvolve:
                     )
 
         utils_out = np.asarray(
-            convolve._shift_time_axis_and_convolve(trial_counts, basis_matrix, axis=1)
+            convolve._shift_time_axis_and_convolve(
+                trial_counts,
+                basis_matrix,
+                axis=1,
+                batch_size_channels=1,
+                batch_size_basis=basis_matrix.shape[1],
+                batch_size_samples=_get_sample_axis_len(trial_counts, axis=1),
+                use_fft=use_fft,
+            )
         )
         assert np.allclose(utils_out, numpy_out, rtol=10**-5, atol=10**-5), (
             "Output of utils.convolve_1d_trials "
@@ -152,17 +189,42 @@ class TestCreateConvolutionalPredictor:
         ],
     )
     def test_sufficient_trial_duration(self, basis_matrix, trial_counts):
-        raise_exception = trial_counts.shape[1] < basis_matrix.shape[0]
-        if raise_exception:
-            with pytest.raises(
-                ValueError,
-                match="Insufficient trial duration. The number of time points",
+        warns = trial_counts.shape[1] < basis_matrix.shape[0]
+        if warns:
+            with pytest.warns(
+                UserWarning,
+                match="One or more trials are shorter",
             ):
-                convolve.create_convolutional_predictor(
+                res = convolve.create_convolutional_predictor(
                     basis_matrix, trial_counts, axis=1
                 )
+                assert np.all(np.isnan(res))
         else:
             convolve.create_convolutional_predictor(basis_matrix, trial_counts, axis=1)
+
+    @pytest.mark.parametrize("basis_matrix", [np.zeros((4, 3))])
+    @pytest.mark.parametrize(
+        "trial_counts, batch_samples, expectation",
+        [
+            (np.zeros((1, 4, 2)), None, does_not_raise()),
+            (np.zeros((1, 4, 2)), 4, does_not_raise()),
+            (
+                np.zeros((1, 4, 2)),
+                3,
+                pytest.raises(
+                    ValueError,
+                    match="Batch size too small",
+                ),
+            ),
+        ],
+    )
+    def test_sufficient_trial_duration_batching(
+        self, basis_matrix, trial_counts, batch_samples, expectation
+    ):
+        with expectation:
+            convolve.create_convolutional_predictor(
+                basis_matrix, trial_counts, axis=1, batch_size_samples=batch_samples
+            )
 
     @pytest.mark.parametrize(
         "basis_matrix, expectation",
@@ -284,7 +346,19 @@ class TestCreateConvolutionalPredictor:
     @pytest.mark.parametrize(
         "trial_counts", [{key: np.random.normal(size=(10, 3)) for key in range(2)}]
     )
-    def test_valid_convolution_output_tree(self, basis_matrix, trial_counts):
+    @pytest.mark.parametrize("batch_samples", [None, 5])
+    @pytest.mark.parametrize("batch_channels", [None, 1, 2])
+    @pytest.mark.parametrize("batch_basis", [None, 1, 2])
+    @pytest.mark.parametrize("use_fft", [False, True])
+    def test_valid_convolution_output_tree(
+        self,
+        basis_matrix,
+        trial_counts,
+        batch_samples,
+        batch_channels,
+        batch_basis,
+        use_fft,
+    ):
         numpy_out = np.zeros(
             (
                 len(trial_counts),
@@ -301,7 +375,14 @@ class TestCreateConvolutionalPredictor:
                     )
         ws = basis_matrix.shape[0]
         utils_out = convolve.create_convolutional_predictor(
-            basis_matrix, trial_counts, axis=0, shift=False
+            basis_matrix,
+            trial_counts,
+            axis=0,
+            shift=False,
+            batch_size_samples=batch_samples,
+            batch_size_basis=batch_basis,
+            batch_size_channels=batch_channels,
+            use_fft=use_fft,
         )
         check = all(
             np.allclose(utils_out[k][ws - 1 :], numpy_out[k], rtol=10**-5, atol=10**-5)
@@ -329,7 +410,9 @@ class TestCreateConvolutionalPredictor:
         conv = convolve.create_convolutional_predictor(
             basis_matrix, trial_counts, axis=axis
         )
-        assert jax.tree_util.tree_structure(trial_counts) == jax.tree_structure(conv)
+        assert jax.tree_util.tree_structure(
+            trial_counts
+        ) == jax.tree_util.tree_structure(conv)
 
     @pytest.mark.parametrize("axis", [0, 1, 2])
     @pytest.mark.parametrize(
@@ -346,10 +429,24 @@ class TestCreateConvolutionalPredictor:
             (2, False, "anti-causal", [29]),
             (2, None, "anti-causal", [29, 28]),
             (3, False, "acausal", [29, 0]),
-            (2, False, "acausal", [29]),
         ],
     )
-    def test_expected_nan(self, axis, window_size, shift, predictor_causality, nan_idx):
+    @pytest.mark.parametrize("batch_samples", [None, 5])
+    @pytest.mark.parametrize("batch_channels", [None, 1, 2])
+    @pytest.mark.parametrize("batch_basis", [None, 1, 2])
+    @pytest.mark.parametrize("use_fft", [False, True])
+    def test_expected_nan(
+        self,
+        axis,
+        window_size,
+        shift,
+        predictor_causality,
+        nan_idx,
+        batch_samples,
+        batch_channels,
+        batch_basis,
+        use_fft,
+    ):
         shape = [1, 1, 1]
         shape[axis] = 30
         feature = np.zeros(shape)
@@ -360,6 +457,10 @@ class TestCreateConvolutionalPredictor:
             predictor_causality=predictor_causality,
             shift=shift,
             axis=axis,
+            batch_size_samples=batch_samples,
+            batch_size_basis=batch_basis,
+            batch_size_channels=batch_channels,
+            use_fft=use_fft,
         )
         # get expected non-nan idxs
         other_idx = list(set(np.arange(res.shape[1])).difference(nan_idx))
@@ -394,19 +495,782 @@ class TestCreateConvolutionalPredictor:
             (2, False, "anti-causal", [20, 75]),
             (2, None, "anti-causal", [20, 19, 75, 74]),
             (3, False, "acausal", [0, 20, 50, 75]),
-            (2, False, "acausal", [20, 75]),
         ],
     )
+    @pytest.mark.parametrize("batch_samples", [None, 5])
+    @pytest.mark.parametrize("batch_channels", [None, 1, 2])
+    @pytest.mark.parametrize("batch_basis", [None, 1, 2])
+    @pytest.mark.parametrize("use_fft", [False, True])
     def test_multi_epoch_pynapple(
-        self, tsd, window_size, shift, predictor_causality, nan_index
+        self,
+        tsd,
+        window_size,
+        shift,
+        predictor_causality,
+        nan_index,
+        batch_samples,
+        batch_channels,
+        batch_basis,
+        use_fft,
     ):
         """Test nan location in multi-epoch pynapple tsd."""
         basis = np.zeros((window_size, 1))
         res = convolve.create_convolutional_predictor(
-            basis, tsd, predictor_causality=predictor_causality, shift=shift
+            basis,
+            tsd,
+            predictor_causality=predictor_causality,
+            shift=shift,
+            batch_size_samples=batch_samples,
+            batch_size_basis=batch_basis,
+            batch_size_channels=batch_channels,
+            use_fft=use_fft,
         )
 
         nan_index = np.sort(nan_index)
         times_nan_found = res[np.isnan(res.d[:, 0])].t
         assert len(times_nan_found) == len(nan_index)
         assert all(times_nan_found == np.array(nan_index))
+
+    @pytest.mark.parametrize(
+        "batch_samples, expectation",
+        [
+            (None, does_not_raise()),
+            (4, does_not_raise()),
+            (
+                -1,
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_samples`` must be a strictly positive",
+                ),
+            ),
+            (
+                "a",
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_samples`` must be a strictly positive",
+                ),
+            ),
+            (
+                (),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_samples`` must be a strictly positive",
+                ),
+            ),
+            (
+                (1,),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_samples`` must be a strictly positive",
+                ),
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "ts, kernels", [(np.random.randn(10, 5), np.random.randn(4, 5))]
+    )
+    def test_invalid_batch_size_samples(self, ts, kernels, batch_samples, expectation):
+        with expectation:
+            convolve.create_convolutional_predictor(
+                kernels,
+                ts,
+                axis=0,
+                batch_size_samples=batch_samples,
+            )
+
+    @pytest.mark.parametrize(
+        "batch_channels, expectation",
+        [
+            (None, does_not_raise()),
+            (4, does_not_raise()),
+            (
+                -1,
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_channels`` must be a strictly positive",
+                ),
+            ),
+            (
+                "a",
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_channels`` must be a strictly positive",
+                ),
+            ),
+            (
+                (),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_channels`` must be a strictly positive",
+                ),
+            ),
+            (
+                (1,),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_channels`` must be a strictly positive",
+                ),
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "ts, kernels", [(np.random.randn(10, 5), np.random.randn(4, 5))]
+    )
+    def test_invalid_batch_size_channels(
+        self, ts, kernels, batch_channels, expectation
+    ):
+        with expectation:
+            convolve.create_convolutional_predictor(
+                kernels,
+                ts,
+                axis=0,
+                batch_size_channels=batch_channels,
+            )
+
+    @pytest.mark.parametrize(
+        "batch_basis, expectation",
+        [
+            (None, does_not_raise()),
+            (4, does_not_raise()),
+            (
+                -1,
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_basis`` must be a strictly positive",
+                ),
+            ),
+            (
+                "a",
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_basis`` must be a strictly positive",
+                ),
+            ),
+            (
+                (),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_basis`` must be a strictly positive",
+                ),
+            ),
+            (
+                (1,),
+                pytest.raises(
+                    ValueError,
+                    match="When provided ``batch_size_basis`` must be a strictly positive",
+                ),
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "ts, kernels", [(np.random.randn(10, 5), np.random.randn(4, 5))]
+    )
+    def test_invalid_batch_size_basis(self, ts, kernels, batch_basis, expectation):
+        with expectation:
+            convolve.create_convolutional_predictor(
+                kernels,
+                ts,
+                axis=0,
+                batch_size_basis=batch_basis,
+            )
+
+    @pytest.mark.parametrize("input_shape", [(3, 1), (3, 2), (3, 3)])
+    @pytest.mark.parametrize("batch_size", [1, 2, 3])
+    @pytest.mark.requires_x64
+    def test_batch_binary_func_output(self, input_shape, batch_size):
+        """Check expected output values."""
+
+        def add(a, b):
+            return a + b
+
+        x, y = np.random.randn(*input_shape), np.arange(3)[:, np.newaxis]
+        result = convolve._batch_binary_func(
+            x, y, binary_func=add, batch_size=batch_size, axis=1
+        )
+        assert np.all(result == add(x, y))
+
+    @pytest.mark.parametrize("input_shape", [(3, 2)])
+    @pytest.mark.parametrize("batch_size", [1])
+    @pytest.mark.parametrize("out_axis, expected_out_shape", [(0, (6, 1)), (1, (3, 2))])
+    @pytest.mark.requires_x64
+    def test_batch_binary_func_out_axis(
+        self, input_shape, batch_size, out_axis, expected_out_shape
+    ):
+        """Check expected out shape."""
+
+        def add(a, b):
+            return a + b
+
+        x, y = np.random.randn(*input_shape), np.arange(3)[:, np.newaxis]
+        result = convolve._batch_binary_func(
+            x, y, binary_func=add, batch_size=batch_size, axis=1, out_axis=out_axis
+        )
+        assert expected_out_shape == result.shape
+
+    @pytest.mark.parametrize("input_shape", [(3, 3)])
+    @pytest.mark.parametrize("batch_size", [2])
+    @pytest.mark.requires_x64
+    def test_batch_binary_func_pad(self, input_shape, batch_size):
+
+        def add(a, b):
+            return a + b
+
+        x, y = np.random.randn(*input_shape), np.arange(3)[:, np.newaxis]
+        # test that nan-padding and crop and no padding makes no difference
+        result = convolve._batch_binary_func(
+            x, y, binary_func=add, batch_size=batch_size, axis=1, pad_final_batch=True
+        )
+        result_nopad = convolve._batch_binary_func(
+            x, y, binary_func=add, batch_size=batch_size, axis=1, pad_final_batch=False
+        )
+        assert np.all(result_nopad == result)
+
+
+def numpy_tensor_convolve(array, eval_basis):
+    """Naive implementation of _tensor_convolve."""
+    n_samples, n_channels = array.shape
+    window_size, n_basis = eval_basis.shape
+    output = np.empty((n_samples - window_size + 1, n_channels, n_basis))
+    for i in range(n_channels):
+        for j in range(n_basis):
+            output[:, i, j] = np.convolve(array[:, i], eval_basis[:, j], mode="valid")
+    return output
+
+
+@pytest.mark.parametrize("input_shape", [(30, 4), (50, 6)])
+@pytest.mark.parametrize("basis_shape", [(5, 3), (7, 2)])
+@pytest.mark.parametrize("batch_sizes", [(16, 2, 1), (25, 3, 1)])
+def test_tensor_convolve(input_shape, basis_shape, batch_sizes):
+    """Test different parameter combinations against naive implementation."""
+    key = jax.random.PRNGKey(0)
+    array = jax.random.normal(key, shape=input_shape)
+    eval_basis = jax.random.normal(key, shape=basis_shape)
+
+    batch_size_samples, batch_size_channels, batch_size_basis = batch_sizes
+
+    result = convolve._tensor_convolve(
+        array, eval_basis, batch_size_samples, batch_size_channels, batch_size_basis
+    )
+    expected = numpy_tensor_convolve(np.array(array), np.array(eval_basis))
+
+    np.testing.assert_allclose(np.array(result), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("input_shape", [(30, 4), (50, 6)])
+@pytest.mark.parametrize("basis_shape", [(5, 3), (7, 2)])
+@pytest.mark.parametrize("batch_channels", [1, 2])
+@pytest.mark.parametrize("batch_basis", [1, 2])
+def test_fft_convolve(input_shape, basis_shape, batch_channels, batch_basis):
+    """Test the FFT path against the naive implementation across channel/basis batch
+    combinations (``_fft_convolve`` has no sample batching, so ``batch_size_samples``
+    is not a parameter, and it takes resolved integer batch sizes, so ``None`` is not
+    a valid value here)."""
+    key = jax.random.PRNGKey(0)
+    array = jax.random.normal(key, shape=input_shape)
+    eval_basis = jax.random.normal(key, shape=basis_shape)
+
+    result = convolve._fft_convolve(array, eval_basis, batch_channels, batch_basis)
+    expected = numpy_tensor_convolve(np.array(array), np.array(eval_basis))
+
+    np.testing.assert_allclose(np.array(result), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("input_shape", [(60, 4), (50, 6)])
+@pytest.mark.parametrize("basis_shape", [(5, 3), (7, 2)])
+# block sizes that both evenly and unevenly tile the sample axis
+@pytest.mark.parametrize("batch_samples", [10, 16, 23])
+@pytest.mark.parametrize("batch_channels", [1, 2])
+@pytest.mark.parametrize("batch_basis", [1, 2])
+def test_fft_overlap_save_convolve(
+    input_shape, basis_shape, batch_samples, batch_channels, batch_basis
+):
+    """Overlap-save FFT matches the naive implementation across block sizes and
+    channel/basis batch combinations."""
+    key = jax.random.PRNGKey(0)
+    array = jax.random.normal(key, shape=input_shape)
+    eval_basis = jax.random.normal(key, shape=basis_shape)
+
+    result = convolve._fft_overlap_save_convolve(
+        array, eval_basis, batch_samples, batch_channels, batch_basis
+    )
+    expected = numpy_tensor_convolve(np.array(array), np.array(eval_basis))
+    np.testing.assert_allclose(np.array(result), expected, rtol=1e-5, atol=1e-5)
+
+
+def _shaped_noop(array, eval_basis, *args, **kwargs):
+    """Zero-valued stand-in for a convolution, shaped like a ``"valid"`` result.
+
+    Mirrors how model-fit tests replace an expensive call with a noop: it lets the
+    surrounding pad/shift machinery run while skipping the actual convolution.
+    """
+    n_out = array.shape[0] - eval_basis.shape[0] + 1
+    return jnp.zeros((n_out, *array.shape[1:], eval_basis.shape[1]))
+
+
+@pytest.mark.parametrize(
+    "use_fft, window_size, n_samples, batch_samples, batch_channels, expected",
+    [
+        # no effective batching (unset, or the batch spans the whole axis): the
+        # unbatched fast path with the primitive of the chosen backend
+        (False, 64, 128, None, None, "unbatched_direct"),
+        (True, 4, 128, None, None, "unbatched_fft"),
+        (True, 4, 128, 128, None, "unbatched_fft"),
+        # forced direct with any effective batching
+        (False, 64, 128, 100, None, "direct"),
+        (False, 64, 128, None, 1, "direct"),
+        # forced FFT: full FFT when only channels/basis are batched, overlap-save when
+        # the sample block is smaller than the sample axis
+        (True, 4, 128, None, 1, "full_fft"),
+        (True, 4, 128, 50, None, "overlap_save"),
+        # use_fft=None: CPU heuristic routes on window vs log2(block size), then the
+        # batching selects the backend
+        (None, 4, 1024, None, None, "unbatched_direct"),  # short kernel -> direct
+        (None, 64, 128, None, None, "unbatched_fft"),  # long kernel -> FFT
+        (None, 64, 128, 100, None, "overlap_save"),  # long kernel, sample-batched
+        (None, 4, 1024, 100, None, "direct"),  # short kernel, sample-batched
+    ],
+)
+def test_use_fft_routing(
+    monkeypatch,
+    use_fft,
+    window_size,
+    n_samples,
+    batch_samples,
+    batch_channels,
+    expected,
+):
+    """``use_fft`` (incl. the ``None`` heuristic) and the batch sizes together dispatch
+    to the right implementation: unbatched fast path (with the direct or FFT primitive),
+    direct, single FFT, or overlap-save FFT.
+
+    All four backends are replaced with shaped noops so the test asserts only on which
+    one is invoked, not on numerical output.
+    """
+    mocks = {
+        "unbatched": Mock(side_effect=_shaped_noop),
+        "direct": Mock(side_effect=_shaped_noop),
+        "full_fft": Mock(side_effect=_shaped_noop),
+        "overlap_save": Mock(side_effect=_shaped_noop),
+    }
+    monkeypatch.setattr(convolve, "_unbatched_convolve", mocks["unbatched"])
+    monkeypatch.setattr(convolve, "_tensor_convolve", mocks["direct"])
+    monkeypatch.setattr(convolve, "_fft_convolve", mocks["full_fft"])
+    monkeypatch.setattr(convolve, "_fft_overlap_save_convolve", mocks["overlap_save"])
+
+    time_series = np.zeros((n_samples, 2))
+    basis_matrix = np.zeros((window_size, 3))
+    convolve.create_convolutional_predictor(
+        basis_matrix,
+        time_series,
+        use_fft=use_fft,
+        batch_size_samples=batch_samples,
+        batch_size_channels=batch_channels,
+    )
+
+    if expected.startswith("unbatched"):
+        mock = mocks.pop("unbatched")
+        mock.assert_called()
+        # the backend choice surfaces as the primitive handed to the fast path
+        want = (
+            convolve._CORR_VEC_FFT if expected.endswith("fft") else convolve._CORR_VEC
+        )
+        assert all(call.args[2] is want for call in mock.call_args_list)
+    else:
+        mocks.pop(expected).assert_called()
+    for name, mock in mocks.items():
+        mock.assert_not_called()
+
+
+@pytest.mark.parametrize("batch_channels", [None, 1, 2])
+@pytest.mark.parametrize("batch_basis", [None, 1, 2])
+def test_fft_path_uses_batching(monkeypatch, batch_channels, batch_basis):
+    """The FFT path routes through the batching machinery with the FFT primitive.
+
+    The FFT correlation op is swapped for a jittable noop, and ``_batch_binary_func`` is
+    spied on (delegating to the real implementation) to verify that the user-provided
+    channel/basis batch sizes are threaded through and that the FFT primitive is the
+    innermost callable, across every combination of the two batch sizes. When neither
+    batch size is set, the unbatched fast path must be taken instead and the batching
+    machinery must stay untouched.
+    """
+
+    def fake_corr(eval_basis, array):
+        # match `_CORR_VEC` output layout: (n_out, n_basis, n_channels)
+        n_out = array.shape[0] - eval_basis.shape[0] + 1
+        return jnp.zeros((n_out, eval_basis.shape[1], array.shape[1]))
+
+    monkeypatch.setattr(convolve, "_CORR_VEC_FFT", fake_corr)
+
+    spy_binary = Mock(wraps=convolve._batch_binary_func)
+    spy_fft = Mock(wraps=convolve._fft_convolve)
+    spy_direct = Mock(wraps=convolve._tensor_convolve)
+    spy_unbatched = Mock(wraps=convolve._unbatched_convolve)
+    monkeypatch.setattr(convolve, "_batch_binary_func", spy_binary)
+    monkeypatch.setattr(convolve, "_fft_convolve", spy_fft)
+    monkeypatch.setattr(convolve, "_tensor_convolve", spy_direct)
+    monkeypatch.setattr(convolve, "_unbatched_convolve", spy_unbatched)
+
+    n_channels, n_basis = 4, 3
+    time_series = np.random.randn(60, n_channels)
+    basis_matrix = np.random.randn(6, n_basis)
+    convolve.create_convolutional_predictor(
+        basis_matrix,
+        time_series,
+        use_fft=True,
+        batch_size_channels=batch_channels,
+        batch_size_basis=batch_basis,
+    )
+
+    if batch_channels is None and batch_basis is None:
+        # no batching requested: fast path with the FFT primitive, no scan machinery
+        spy_unbatched.assert_called_once()
+        assert spy_unbatched.call_args.args[2] is fake_corr
+        spy_binary.assert_not_called()
+        spy_fft.assert_not_called()
+        spy_direct.assert_not_called()
+        return
+
+    # `None` means "one batch spanning the whole axis"; otherwise it is capped at the size.
+    expected_channels = (
+        n_channels if batch_channels is None else min(batch_channels, n_channels)
+    )
+    expected_basis = n_basis if batch_basis is None else min(batch_basis, n_basis)
+
+    # the FFT path is taken, the direct and unbatched paths are not
+    spy_fft.assert_called_once()
+    spy_direct.assert_not_called()
+    spy_unbatched.assert_not_called()
+
+    # batching machinery is exercised, and the resolved batch sizes are threaded through
+    # (`batch_size` is the 4th positional arg of `_batch_binary_func`)
+    batch_sizes = {call.args[3] for call in spy_binary.call_args_list}
+    assert {expected_channels, expected_basis}.issubset(batch_sizes)
+
+    # the FFT primitive is the innermost callable passed to the batched convolution
+    # (`binary_func` is the 3rd positional arg)
+    binary_funcs = [call.args[2] for call in spy_binary.call_args_list]
+    assert fake_corr in binary_funcs
+
+
+def _jit_cache_sizes():
+    """Snapshot the jit-cache size of every jitted function in ``nemos.convolve``."""
+    return {
+        name: attr._cache_size()
+        for name, attr in vars(convolve).items()
+        if hasattr(attr, "_cache_size")
+    }
+
+
+@pytest.mark.parametrize("use_fft", [False, True])
+@pytest.mark.parametrize(
+    "conv_kwargs",
+    [
+        {},  # no batching: unbatched fast path
+        {"batch_size_channels": 2},
+        {"batch_size_basis": 2},
+        {"batch_size_samples": 30},
+        {"batch_size_samples": 30, "batch_size_channels": 2, "batch_size_basis": 2},
+    ],
+)
+def test_create_convolutional_predictor_compiles_once(use_fft, conv_kwargs):
+    """Repeated calls with identical shapes and batch sizes never re-trace.
+
+    Regression test for a closure passed as a static jit argument: a fresh function
+    object per call changes the cache key and forces a retrace + recompile on every
+    call. After one warm-up call, further identical calls must leave the jit cache of
+    every jitted function in ``nemos.convolve`` untouched, on every dispatch path.
+    """
+    time_series = np.random.randn(60, 4)
+    basis_matrix = np.random.randn(5, 3)
+
+    def run():
+        convolve.create_convolutional_predictor(
+            basis_matrix, time_series, use_fft=use_fft, **conv_kwargs
+        )
+
+    run()  # warm-up: populate the caches
+    sizes = _jit_cache_sizes()
+    for _ in range(3):
+        run()
+    assert _jit_cache_sizes() == sizes
+
+
+_fresh_n_samples = itertools.count(211, 7)
+
+
+@pytest.mark.parametrize(
+    "use_fft, conv_kwargs, expected_compiled",
+    [
+        # no batching: the fast path compiles alone
+        (False, {}, "_unbatched_convolve"),
+        (True, {}, "_unbatched_convolve"),
+        # direct with any batching: only the tensor-convolve executable
+        (False, {"batch_size_channels": 2}, "_tensor_convolve"),
+        (False, {"batch_size_basis": 2}, "_tensor_convolve"),
+        (False, {"batch_size_samples": 30}, "_tensor_convolve"),
+        # FFT, channel/basis batching only: single full-length FFT executable
+        (True, {"batch_size_channels": 2}, "_fft_convolve"),
+        (True, {"batch_size_basis": 2}, "_fft_convolve"),
+        # FFT with sample batching: the overlap-save executable (jitted; safe against
+        # the XLA:CPU pad corruption via the pad-row re-zeroing, jax-ml/jax#39120)
+        (True, {"batch_size_samples": 30}, "_fft_overlap_save_convolve"),
+    ],
+)
+def test_one_compilation_per_new_shape(use_fft, conv_kwargs, expected_compiled):
+    """A fresh input shape compiles exactly one executable, in the dispatched backend.
+
+    Nested jitted helpers must be absorbed into the outer trace (zero cache entries of
+    their own), and no path may compile machinery it does not use — e.g. the unbatched
+    fast path must leave every batching function untouched.
+    """
+    time_series = np.random.randn(next(_fresh_n_samples), 4)
+    basis_matrix = np.random.randn(5, 3)
+
+    before = _jit_cache_sizes()
+    convolve.create_convolutional_predictor(
+        basis_matrix, time_series, use_fft=use_fft, **conv_kwargs
+    )
+    growth = {k: v - before[k] for k, v in _jit_cache_sizes().items() if v != before[k]}
+    expected = {expected_compiled: 1} if expected_compiled else {}
+    assert growth == expected
+
+
+@pytest.mark.parametrize(
+    "time_series, n_pieces",
+    [
+        # minimal pytree case: two leaves of the same shape and dtype
+        ([np.random.randn(50, 2), np.random.randn(50, 2)], 2),
+        # pynapple series with four epochs of equal length (25 samples each)
+        (
+            nap.Tsd(
+                t=np.arange(100.0),
+                d=np.random.randn(100),
+                time_support=nap.IntervalSet([0, 25, 50, 75], [24.5, 49.5, 74.5, 99.5]),
+            ),
+            4,
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "conv_kwargs, backend",
+    [
+        # no batching: fast path, trailing arg is the corr_vec primitive
+        ({}, "_unbatched_convolve"),
+        # batched paths: trailing args are the resolved static batch sizes, which are
+        # resolved per leaf/epoch and must come out identical for equal-shape pieces
+        ({"batch_size_basis": 2}, "_tensor_convolve"),
+        ({"batch_size_samples": 10}, "_tensor_convolve"),
+        ({"batch_size_basis": 2, "use_fft": True}, "_fft_convolve"),
+        ({"batch_size_samples": 10, "use_fft": True}, "_fft_overlap_save_convolve"),
+    ],
+)
+def test_equal_shape_pieces_share_one_compilation(
+    monkeypatch, time_series, n_pieces, conv_kwargs, backend
+):
+    """Equal-shape pytree leaves / pynapple epochs all hit one compile signature.
+
+    The input is convolved piece by piece (per leaf, per epoch); every piece must reach
+    the same backend with identical array shapes/dtypes and identical trailing static
+    arguments (batch sizes or the corr_vec primitive), so jax compiles once and reuses
+    the executable for the remaining pieces — on every dispatch path.
+    """
+    spy = Mock(side_effect=_shaped_noop)
+    monkeypatch.setattr(convolve, backend, spy)
+
+    convolve.create_convolutional_predictor(
+        np.random.randn(5, 3), time_series, **conv_kwargs
+    )
+
+    assert spy.call_count == n_pieces
+    compile_keys = {
+        tuple((arg.shape, arg.dtype) for arg in call.args[:2]) + tuple(call.args[2:])
+        for call in spy.call_args_list
+    }
+    assert len(compile_keys) == 1
+
+
+class _CompileLogCounter(logging.Handler):
+    """Count XLA 'Compiling ...' records emitted while ``jax_log_compiles`` is on."""
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.count = 0
+
+    def emit(self, record):
+        if "Compiling" in record.getMessage():
+            self.count += 1
+
+
+@pytest.mark.parametrize(
+    "conv_kwargs",
+    [
+        {},
+        {"use_fft": True},
+        {"batch_size_samples": 10, "use_fft": False},
+        {"batch_size_samples": 10, "use_fft": True},
+    ],
+)
+def test_repeat_call_triggers_no_compilation_globally(conv_kwargs):
+    """A repeated identical call compiles nothing, in any layer.
+
+    The cache-size checks only see the jitted functions of ``nemos.convolve``; layers in
+    between run eagerly and compile through jax's global op caches. With
+    ``jax_log_compiles`` every XLA compilation emits a log record, so counting records
+    gives the global guarantee: the first call on fresh shapes must compile something
+    (self-check that the probe works), and a second identical call must compile nothing
+    anywhere in the pipeline.
+    """
+    n = next(_fresh_n_samples)
+    starts = [float(i * n) for i in range(4)]
+    ends = [float(i * n + n) - 0.5 for i in range(4)]
+    tsd = nap.Tsd(
+        t=np.arange(4.0 * n),
+        d=np.random.randn(4 * n),
+        time_support=nap.IntervalSet(starts, ends),
+    )
+    basis_matrix = np.random.randn(5, 3)
+
+    counter = _CompileLogCounter()
+    logger = logging.getLogger("jax")
+    logger.addHandler(counter)
+    try:
+        with jax.log_compiles(True):
+            convolve.create_convolutional_predictor(basis_matrix, tsd, **conv_kwargs)
+            first = counter.count
+            counter.count = 0
+            convolve.create_convolutional_predictor(basis_matrix, tsd, **conv_kwargs)
+            second = counter.count
+    finally:
+        logger.removeHandler(counter)
+
+    assert first > 0
+    assert second == 0
+
+
+def test_use_fft_none_is_jit_safe():
+    """``use_fft=None`` is safe to trace under ``jit``.
+
+    While tracing, the array is a tracer whose ``.devices()`` raises; ``_array_on_cpu``
+    catches it and returns ``False``, so the heuristic falls back to the direct path.
+    The end result is that ``create_convolutional_predictor`` compiles and its output
+    matches the eager direct convolution.
+    """
+    # the guard is exercised under a trace: the tracer's .devices() raises and is caught
+    on_cpu_under_jit = {}
+
+    @jax.jit
+    def probe(x):
+        on_cpu_under_jit["value"] = convolve._array_on_cpu(x)
+        return x
+
+    probe(jnp.zeros((5,)))
+    assert on_cpu_under_jit["value"] is False
+
+    # end-to-end: use_fft=None compiles and equals the direct path
+    rng = np.random.default_rng(0)
+    kernel = rng.standard_normal((6, 4))
+    time_series = rng.standard_normal((60, 3))
+    jitted = jax.jit(
+        lambda k, x: convolve.create_convolutional_predictor(k, x, use_fft=None)
+    )
+    np.testing.assert_allclose(
+        np.asarray(jitted(kernel, time_series)),
+        np.asarray(
+            convolve.create_convolutional_predictor(kernel, time_series, use_fft=False)
+        ),
+        rtol=1e-5,
+        atol=1e-5,
+        equal_nan=True,
+    )
+
+
+@pytest.mark.parametrize("use_fft", [False, True])
+def test_create_convolutional_predictor_jit_compatible(use_fft):
+    """Both backends are traceable under ``jit`` and match the eager result.
+
+    ``use_fft`` is a static boolean (no device inspection), so forcing either backend
+    compiles cleanly; the FFT path is available under ``jit`` when explicitly opted in.
+    """
+    rng = np.random.default_rng(0)
+    kernel = rng.standard_normal((6, 4))
+    time_series = rng.standard_normal((60, 3))
+    jitted = jax.jit(
+        lambda k, x: convolve.create_convolutional_predictor(k, x, use_fft=use_fft)
+    )
+    np.testing.assert_allclose(
+        np.asarray(jitted(kernel, time_series)),
+        np.asarray(
+            convolve.create_convolutional_predictor(
+                kernel, time_series, use_fft=use_fft
+            )
+        ),
+        rtol=1e-5,
+        atol=1e-5,
+        equal_nan=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "tsd, nan_placement",
+    [
+        # epochs: invalid, valid
+        (
+            nap.Tsd(
+                t=np.arange(10),
+                d=np.ones(10),
+                time_support=nap.IntervalSet([0, 2], [1.5, 10]),
+            ),
+            [0, 1, 2, 3, 4],
+        ),
+        # epochs: valid, invalid
+        (
+            nap.Tsd(
+                t=np.arange(10),
+                d=np.ones(10),
+                time_support=nap.IntervalSet([0, 9], [7, 11]),
+            ),
+            [0, 1, 2, 8],
+        ),
+        # epochs: invalid, invalid
+        (
+            nap.Tsd(
+                t=np.arange(10),
+                d=np.ones(10),
+                time_support=nap.IntervalSet([0, 7.5], [1.5, 11]),
+            ),
+            [0, 1, 2, 3],
+        ),
+    ],
+)
+@pytest.mark.parametrize("kern", [np.random.randn(3, 1)])
+def test_convolve_nap_short_iset(tsd, nan_placement, kern):
+    with pytest.warns(UserWarning, match="One or more trials are shorter"):
+        out = convolve.create_convolutional_predictor(kern, tsd)
+        assert np.all(np.isnan(out.d[nan_placement]))
+        non_nan_idx = np.setxor1d(np.arange(out.shape[0]), nan_placement)
+        assert not np.any(np.isnan(out.d[non_nan_idx]))
+
+
+@pytest.mark.parametrize(
+    "slice_up_to, expectation",
+    [
+        (5, does_not_raise()),
+        (2, pytest.warns(UserWarning, match="One or more trials are shorter")),
+    ],
+)
+@pytest.mark.parametrize("kern", [np.random.randn(3, 1)])
+def test_convolve_sliced_tsd(slice_up_to, expectation, kern):
+    tsd = nap.Tsd(
+        t=np.arange(10), d=np.ones(10), time_support=nap.IntervalSet([0, 6], [5, 10])
+    )
+    sliced_tsd = tsd[:slice_up_to]
+    with expectation:
+        convolve.create_convolutional_predictor(kern, [sliced_tsd, tsd])
+
+
+def test_convolve_short_arrays():
+    kern = np.random.randn(3, 1)
+    arrs = [np.ones(2), np.ones(1)]
+    with pytest.warns(UserWarning, match="One or more trials are shorter"):
+        out = convolve.create_convolutional_predictor(kern, arrs)
+        assert all(np.all(np.isnan(o)) for o in out)

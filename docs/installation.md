@@ -1,15 +1,17 @@
+# Install
+
 ## Prerequisites
 
-1. **Ensure you have Python version `3.9` or above**: Check that Python `3.9` or above is installed in your system by opening the terminal/command prompt and executing the following command,
+1. **Ensure you have Python version `3.10` or above**: Check that Python `3.10` or above is installed in your system by opening the terminal/command prompt and executing the following command,
     ```bash
     python --version
     ```
-    If you are unable to run the command, or if your Python version is below `3.9`, install/update Python.
+    If you are unable to run the command, or if your Python version is below `3.10`, install/update Python.
 
-    We suggest downloading an installer from [Anaconda](https://docs.anaconda.com/free/anaconda/install/) or [Miniconda](https://docs.anaconda.com/free/miniconda/). The former includes a comprehensive selection of Python packages for data-science and machine learning. The latter is a minimal installer which includes only few packages. 
+    We suggest downloading an installer from [Anaconda](https://docs.anaconda.com/free/anaconda/install/) or [Miniconda](https://docs.anaconda.com/free/miniconda/). The former includes a comprehensive selection of Python packages for data-science and machine learning. The latter is a minimal installer which includes only few packages.
     If you are not sure which one works best for you, take a look at the [Anaconda guidelines](https://docs.anaconda.com/free/distro-or-miniconda/).
 
-2. **Create and activate a virtual environment:** Once your updated python is up and running, we recommend creating and activating a Python virtual environment using [`venv`](https://docs.python.org/3/library/venv.html) before installing NeMoS. This practice helps manage dependencies and avoid conflicts with other Python packages. 
+2. **Create and activate a virtual environment:** Once your updated python is up and running, we recommend creating and activating a Python virtual environment using [`venv`](https://docs.python.org/3/library/venv.html) before installing NeMoS. This practice helps manage dependencies and avoid conflicts with other Python packages.
 
     For `venv`, create your virtual environment in a specific directory. This example uses `~/python_venvs/nemos` for Linux/Mac and `C:%HOMEPATH%\python_venvs\nemos` for Windows; in general, free to use whatever directory works best for you.
 
@@ -39,9 +41,11 @@
 
 ## Installation Steps
 After creating you virtual environment, follow one of the following sections below, depending on whether you need GPU support or not:
+
+(cpu-installation)=
 ### CPU Installation
 
-To install NeMoS on a system without a GPU, run this command from within your activated environment, 
+To install NeMoS on a system without a GPU, run this command from within your activated environment,
 
 **For macOS/Linux users:**
  ```bash
@@ -53,10 +57,15 @@ To install NeMoS on a system without a GPU, run this command from within your ac
  python -m pip install nemos
  ```
 
+Earlier versions of NeMoS used [JAXopt](https://jaxopt.github.io/stable/) as its optimization backend. As JAXopt is not maintained anymore, NeMoS now relies on [Optimistix](https://docs.kidger.site/optimistix/) and [Optax](https://optax.readthedocs.io/en/latest/). If you still want to use solvers from JAXopt, install it with `pip install jaxopt` or install NeMoS with `pip install "nemos[jaxopt]"` and specify a solver name like `LBFGS[jaxopt]` when creating models.
+
 ### GPU Installation
 
-!!! warning
-    JAX does not guarantee GPU support for Windows, see [here](https://jax.readthedocs.io/en/latest/installation.html#supported-platforms) for updates.
+:::{warning}
+
+JAX does not guarantee GPU support for Windows, see [here](https://jax.readthedocs.io/en/latest/installation.html#supported-platforms) for updates.
+
+:::
 
 For systems equipped with a GPU, you need to specifically install the GPU-enabled versions of `jax` and `jaxlib` before installing NeMoS.
 
@@ -70,7 +79,7 @@ For systems equipped with a GPU, you need to specifically install the GPU-enable
 
     If your GPU is listed among the devices, the installation was successful.
 
-3. **Install NeMoS`:** After successfully installing and configuring `jax` for GPU support, install NeMoS using the same command as in the [CPU installation](#cpu-installation).
+3. **Install NeMoS:** After successfully installing and configuring `jax` for GPU support, install NeMoS using the same command as in the [CPU installation](#cpu-installation).
 
 ### Installation For Developers
 

@@ -1,7 +1,22 @@
-# Introduction
 
-!!! warning
-    This note is out-of-sync with the current API. Please, do not rely on this yet for contributing to NeMoS.
+# For Developers
+
+## Contents
+
+```{toctree}
+:maxdepth: 1
+
+01-base_class.md
+02-base_regressor.md
+03-glm.md
+04-basis_module.md
+05-observation_models.md
+06-regularizer.md
+07-solvers.md
+```
+
+## Introduction
+
 
 Welcome to the Developer Notes of the NeMoS project. These notes aim to provide detailed technical information about the various modules, classes, and functions that make up this library, as well as guidelines on how to write code that integrates nicely with our package. They are intended to help current and future developers understand the design decisions, structure, and functioning of the library, and to provide guidance on how to modify, extend, and maintain the codebase.
 
@@ -16,7 +31,7 @@ These notes are primarily intended for the following groups:
 
 - **Contributors**: If you wish to contribute to the NeMoS project, the Developer Notes can provide a solid foundation of understanding, helping to ensure that your contributions align with the existing structure and design principles of the library.
 
-- **Advanced Users**: While the primary focus of these notes is on development, they might also be of interest to advanced users who want a deeper understanding of the library's functionality. 
+- **Advanced Users**: While the primary focus of these notes is on development, they might also be of interest to advanced users who want a deeper understanding of the library's functionality.
 
 Please note that these notes assume a certain level of programming knowledge. Familiarity with Python, object-oriented programming, and the NumPy, Scipy and Jax libraries would be beneficial when reading these notes.
 
@@ -26,16 +41,32 @@ The Developer Notes are divided into sections, each focusing on a different modu
 
 - **Must**: This denotes a requirement. Any method or function that fails to meet the requirement will not be merged.
 - **Should**: This denotes a suggestion. Reasons should be provided if a suggestion is not followed.
-- **May**: This denotes an option that, if implemented, could enhance the user/developer experience but can be overlooked if deemed unnecessary. 
+- **May**: This denotes an option that, if implemented, could enhance the user/developer experience but can be overlooked if deemed unnecessary.
+
+## Development Tips
+
+### Debugging Lazy Imports
+
+NeMoS uses lazy loading ([SPEC-0001](https://scientific-python.org/specs/spec-0001/)) to reduce import time. This means import errors in submodules only surface when the submodule is first accessed, not at `import nemos`.
+
+To catch import errors early during development or testing, set the `EAGER_IMPORT` environment variable:
+
+```bash
+EAGER_IMPORT=1 python -c "import nemos"
+```
+
+or
+
+```bash
+EAGER_IMPORT=1 pytest tests/
+```
+
+This disables lazy loading, causing all submodules to load immediately and any import errors to surface right away.
 
 ## Interact with us
 
 If you're considering contributing to the library, first of all, welcome aboard! As a first step, we recommend that you read the [`CONTRIBUTING.md`](https://github.com/flatironinstitute/nemos/blob/main/CONTRIBUTING.md) guidelines. These will help you understand how to interact with other contributors and how to submit your changes.
 
-If you have any questions or need further clarification on any of the topics covered in these notes, please don't hesitate to reach out to us. You can do so via the [discussion](https://github.com/flatironinstitute/nemos/discussions/landing) forum on GitHub.
+If you have any questions or need further clarification on any of the topics covered in these notes, please don't hesitate to reach out to us. You can do so via the [discussion](https://github.com/flatironinstitute/nemos/discussions/) forum on GitHub.
 
 We're looking forward to your contributions and to answering any queries you might have!
-
-
-
-

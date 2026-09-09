@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+"""Custom FeaturePytree class.
+
+Implement the ``FeaturePytree`` class that stores inputs as a dictionary of arrays.
+These objects can be used as inputs to NeMoS models. The fitted coefficients will be stored as
+dictionaries with matching keys, facilitating interpretation of the model output.
+"""
+
+import warnings
 from collections import UserDict
 
 import jax
@@ -20,25 +27,45 @@ class FeaturePytree(UserDict):
     """
 
     def __init__(self, **kwargs):
+        warnings.warn(
+            "FeaturePytree is deprecated as of 0.2.8 and will be removed in a future release. "
+            "Replace it with a plain Python dict: {'key': array, ...}.",
+            FutureWarning,
+            stacklevel=2,
+        )
         self._num_time_points = None
         super().__init__(kwargs)
 
+    @classmethod
+    def _from_dict(cls, d):
+        """Construct without emitting the deprecation warning (used internally)."""
+        obj = object.__new__(cls)
+        obj._num_time_points = None
+        UserDict.__init__(obj, {})
+        for k, v in d.items():
+            obj[k] = v
+        return obj
+
     @property
     def shape(self):
+        """Return the sample points, i.e. the shared dimension."""
         # Every value is an array with the same number of time points, so
         # that's the only shared shape.
         return (self._num_time_points,)
 
     def __len__(self):
+        """Return the number of sample points."""
         # Same logic as shape
         return self._num_time_points
 
     @property
     def ndim(self):
+        """Force slicing only on the time axis."""
         # You can slice into a FeaturePytree along one dimension (time)
         return 1
 
     def __setitem__(self, key, value):
+        """Check arrays and set the values."""
         # All keys are strings
         if not isinstance(key, str):
             raise ValueError("Keys must be strings!")
@@ -61,6 +88,7 @@ class FeaturePytree(UserDict):
         super().__setitem__(key, value)
 
     def __getitem__(self, key):
+        """Getitem using data dictionary keys."""
         # We can index into either the features, which have strs as their
         # keys...
         if isinstance(key, str):
@@ -70,11 +98,13 @@ class FeaturePytree(UserDict):
             return jax.tree_util.tree_map(lambda x: x[key], self)
 
     def __repr__(self):
+        """Represent a FeaturePytree."""
         # Show the shape and data type of each array
         repr = [f"{k}: shape {v.shape}, dtype {v.dtype}" for k, v in self.data.items()]
         return "\n".join(repr)
 
     def __eq__(self, other):
+        """Equality over a tree of arrays."""
         # if structure is different, pytree_map_and_reduce will return a ValueError
         if jax.tree_util.tree_structure(self) != jax.tree_util.tree_structure(other):
             return False
@@ -83,11 +113,13 @@ class FeaturePytree(UserDict):
         )
 
     def tree_flatten(self):
+        """Flatten data."""
         return jax.tree_util.tree_flatten(self.data)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """Unflatten the data dict and return the class."""
         try:
-            return cls(**jax.tree_util.tree_unflatten(aux_data, children))
+            return cls._from_dict(jax.tree_util.tree_unflatten(aux_data, children))
         except ValueError:
             return jax.tree_util.tree_unflatten(aux_data, children)

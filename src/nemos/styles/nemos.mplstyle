@@ -1,0 +1,6 @@
+ytick.labelsize : small
+xtick.labelsize : small
+axes.labelsize : small
+axes.spines.right : False
+axes.spines.top : False
+animation.html : jshtml

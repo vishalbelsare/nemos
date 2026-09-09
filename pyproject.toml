@@ -4,32 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nemos"
-version = "0.1.3"
+dynamic = ["version"]
 authors = [{name = "nemos authors"}]
 description = "NEural MOdelS, a statistical modeling framework for neuroscience."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12,<3.15"
 keywords = ["neuroscience", "Poisson-GLM"]
 license = { file = "LICENSE" }
 classifiers = [
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11"
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14"
 ]
 
 # Define dependencies for the project
 dependencies = [
-    "jax>=0.4",                     # Numerical computing library
-    "jaxopt>=0.6",                  # Optimization library built on JAX
+    "jax>=0.4.28",                  # Numerical computing library
     "numpy>1.20",                   # Numerical computing library
     "scipy>=1.10",                  # Scientific computing library
     "typing_extensions>=4.6",       # Typing extensions for Python
-    "pynapple>=0.6.5"
+    'pynapple>=0.10.1',             # On this version, changed tuning curve API
+    "scikit-learn",                 # BaseEstimator and Tags inheritance
+    "optimistix>=0.0.11",
+    "optax>=0.2.5",
+    "lazy_loader>=0.4",             # Lazy loading for improved import times
 ]
-
 
 
 # Configure package discovery for setuptools
@@ -37,6 +39,9 @@ dependencies = [
 where = ["src"]     # The directory where package modules are located
 include = ["nemos"] # The specific package(s) to include in the distribution
 
+[tool.setuptools_scm]
+version_scheme = 'python-simplified-semver'
+local_scheme = 'no-local-version'
 
 # Define optional dependencies for the project
 [project.optional-dependencies]
@@ -44,31 +49,74 @@ dev = [
     "black",                        # Code formatter
     "isort",                        # Import sorter
     "pip-tools",                    # Dependency management
+    "ruff",                         # Lint docstrings for now, eventually switch to ruff for all linting
     "pytest",                       # Testing framework
+    "pytest-xdist",                 # Parallelize pytest
     "flake8",                       # Code linter
     "coverage",                     # Test coverage measurement
     "pytest-cov",                   # Test coverage plugin for pytest
     "statsmodels",                  # Used to compare model pseudo-r2 in testing
     "scikit-learn",                 # Testing compatibility with CV & pipelines
+    "matplotlib>=3.7",              # Needed by doctest to run docstrings examples
+    "pooch",                        # Required by doctest for fetch module
+    "seaborn",                      # Required by doctest for _documentation_utils module
+    "myst-nb",                      # Test myst_nb utils for glue
+    "hmmlearn",                     # Test algorithmic implementations of HMM
+    "tox-uv",                       # Run tox with uv for faster installs
+    "zarr",                         # For testing lazy array loading from zarr files
+    "h5py",                         # For testing lazy array loading from HDF5 files
+    "fsspec",
+    "tqdm",
+    "pyyaml",                       # Parses notebook front matter in scripts/check_notebook_metadata.py
 ]
 docs = [
-    "mkdocs",                       # Documentation generator
-    "mkdocstrings[python]",         # Python-specific plugin for mkdocs
-    "mkdocs-section-index",         # Plugin for generating a section index in mkdocs
-    "mkdocs-gen-files",             # Plugin for generating additional files in mkdocs
-    "mkdocs-literate-nav>=0.6.1",   # Plugin for literate-style navigation in mkdocs
-    "mkdocs-gallery",               # Plugin for adding image galleries to mkdocs
-    "mkdocs-material",              # Material theme for mkdocs
-    "mkdocs-autorefs>=0.5",
+    "pynapple>=0.11",               # Required for nap.compute_event_triggered_average(...) in a tutorial
+    "numpydoc",
+    "sphinx",
+    "pydata-sphinx-theme",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "sphinx-issues",
+    "sphinxcontrib-apidoc",
+    "sphinxcontrib-bibtex",
+    "sphinx-togglebutton",
+    "sphinx_code_tabs",
+    "sphinxemoji",
+    "myst-parser",
+    "myst-nb",
+    "dandi",
+    "sphinx-autobuild",
+    "sphinx-contributors",
     "scikit-learn",
     "dandi",
-    "ipython",
-    "matplotlib>=3.7"
+    "matplotlib>=3.7",
+    "seaborn",
+    "pooch",
+    "ipywidgets",
+    "ipykernel",
+    "patsy",
+    "tqdm",
+    "formulaic",                    # Design matrix constuction package, used in a doc note
+    "one-api"
+]
+examples = [
+    "scikit-learn",
+    "dandi",
+    "matplotlib>=3.7",
+    "seaborn",
+    "pooch",
+    "fsspec",
+    "patsy",
+    "tqdm",
+]
+jaxopt = [
+    "jaxopt>=0.6",
 ]
 
 
 [tool.black]
-target-version = ['py38', 'py39', 'py310']
+target-version = ['py312', 'py313', 'py314']
 skip-string-normalization = false
 exclude = '''
 (
@@ -87,20 +135,76 @@ exclude = '''
     | buck-out
     | build
     | dist
-    | examples))'''
+    | examples
+    ))'''
 
 # Configure isort
 [tool.isort]
 multi_line_output = 3             # Use three-line style for multi-line imports
 include_trailing_comma = true     # Include trailing comma in multi-line imports
 profile = "black"
+skip = []
 
 # Configure pytest
 [tool.pytest.ini_options]
 testpaths = ["tests"]             # Specify the directory where test files are located
+filterwarnings = [
+    # note the use of single quote below to denote "raw" strings in TOML
+    # this is raised whenever one imports the plotting utils
+    'ignore:plotting functions contained within:UserWarning',
+    # numerical inversion test reaches tolerance...
+    'ignore:Tolerance of -?\d\.\d+e-\d\d reached:RuntimeWarning',
+    # mpl must be non-interctive for testing otherwise doctests will freeze
+    'ignore:FigureCanvasAgg is non-interactive, and thus cannot be shown:UserWarning',
+    # expected whenever a test pins every parameter; `pytest.warns` still sees it
+    'ignore:Every parameter is fixed:UserWarning',
+]
+markers = [
+  "solver_related: tests that interact with solvers",
+  "requires_x64: mark test as requiring JAX float64 precision",
+  # Coverage guards: compare what the package registers/discovers against what the test
+  # parametrizations cover, so an uncovered component fails instead of passing silently.
+  # No fitting, so the whole set runs in about a second -- run it BEFORE writing tests
+  # (`pytest -m metatest -q`). Never exclude it from a run.
+  "metatest: coverage guard asserting the test suite covers every registered component",
+]
+# -s: no capture from pytest (prints will show)
+addopts = ["-s", "--strict-markers"]
+
+[tool.coverage.run]
+omit = [
+    "src/nemos/fetch/*",
+    "src/nemos/_documentation_utils/*",
+]
 
 [tool.coverage.report]
 exclude_lines = [
     "@abc.abstractmethod",
     "if __name__ == .__main__.:"
 ]
+
+
+[tool.ruff]
+exclude = ["src/nemos/_documentation_utils"]
+
+
+[tool.ruff.lint]
+select = ["D"]
+ignore = ["D202"]  # this conflicts with black
+
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+
+[tool.jupytext]
+# Keep the writer's local jupytext version out of the myst-nb markdown notebooks,
+# so saving one from Jupyter Lab does not stamp it into the front matter and add
+# an unrelated change to the diff.
+#
+# The kernel display name is the other field Jupyter Lab rewrites, but it cannot
+# be filtered the same way: `kernelspec.display_name` is a required property of
+# the nbformat schema, so a notebook without it fails validation and jupytext can
+# no longer read the file. scripts/check_notebook_metadata.py enforces that one
+# instead.
+notebook_metadata_filter = "-jupytext.text_representation.jupytext_version"

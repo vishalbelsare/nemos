@@ -1,10 +1,13 @@
 """Utilities for manipulating and checking PyTrees."""
 
-from functools import reduce
+import operator
+from functools import partial, reduce
 from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
+from jax.core import Tracer
+from jax.flatten_util import ravel_pytree
 
 
 def _get_not_inf(array: jnp.ndarray) -> jnp.ndarray:
@@ -53,7 +56,7 @@ def _get_not_nan(array: jnp.ndarray) -> jnp.ndarray:
     return jax.numpy.all(~jnp.isnan(array), axis=range(1, array.ndim))
 
 
-def _get_valid_tree(tree: Any) -> jnp.ndarray:
+def _get_valid_tree(pytree: Any) -> jnp.ndarray:
     """
     Filter valid entries across all leaves in a pytree.
 
@@ -62,7 +65,7 @@ def _get_valid_tree(tree: Any) -> jnp.ndarray:
 
     Parameters
     ----------
-    tree :
+    pytree :
         A pytree with leaves as NDArrays sharing the same size for the first dimension.
 
     Returns
@@ -71,12 +74,12 @@ def _get_valid_tree(tree: Any) -> jnp.ndarray:
         while False indicates an invalid (NaN or infinite) entry.
     """
     valid = jax.tree_util.tree_leaves(
-        jax.tree_util.tree_map(lambda x: _get_not_inf(x) & _get_not_nan(x), tree)
+        jax.tree_util.tree_map(lambda x: _get_not_inf(x) & _get_not_nan(x), pytree)
     )
     return reduce(jnp.logical_and, valid)
 
 
-def get_valid_multitree(*tree: Any) -> jnp.ndarray:
+def get_valid_multitree(*pytree: Any) -> jnp.ndarray:
     """
     Filter valid entries across multiple pytrees.
 
@@ -85,7 +88,7 @@ def get_valid_multitree(*tree: Any) -> jnp.ndarray:
 
     Parameters
     ----------
-    tree :
+    pytree :
         Variable number of pytrees with NDArrays as leaves, each having a consistent first dimension size.
 
     Returns
@@ -94,7 +97,7 @@ def get_valid_multitree(*tree: Any) -> jnp.ndarray:
         A boolean array indicating the validity of each entry across all leaves in all pytrees. True for valid entries,
         False for invalid ones.
     """
-    return reduce(jnp.logical_and, map(_get_valid_tree, tree))
+    return reduce(jnp.logical_and, map(_get_valid_tree, pytree))
 
 
 def pytree_map_and_reduce(
@@ -131,8 +134,8 @@ def pytree_map_and_reduce(
     Examples
     --------
     >>> import nemos as nmo
-    >>> pytree1 = nmo.pytrees.FeaturePytree(a=jnp.array([0]), b=jnp.array([0]))
-    >>> pytree2 = nmo.pytrees.FeaturePytree(a=jnp.array([10]), b=jnp.array([20]))
+    >>> pytree1 = dict(a=jnp.array([0]), b=jnp.array([0]))
+    >>> pytree2 = dict(a=jnp.array([10]), b=jnp.array([20]))
     >>> map_fn = lambda x, y: x > y
     >>> # Example usage
     >>> result_any = pytree_map_and_reduce(map_fn, any, pytree1, pytree2)
@@ -140,3 +143,222 @@ def pytree_map_and_reduce(
     cond_tree = jax.tree_util.tree_map(map_fn, *pytrees, is_leaf=is_leaf)
     # for some reason, tree_reduce doesn't work well with any.
     return reduce_fn(jax.tree_util.tree_leaves(cond_tree))
+
+
+def is_traced(*pytrees: Any) -> bool:
+    """
+    Check if any leaf of the pytrees is a JAX tracer.
+
+    A single traced leaf means the computation is running under a JAX
+    transformation (``jit``, ``vmap``, ``grad``, ...), and therefore that every
+    array operation applied to the pytrees must go through ``jax.numpy``:
+    NumPy cannot convert tracers.
+
+    Parameters
+    ----------
+    *pytrees :
+        One or more pytrees to inspect.
+
+    Returns
+    -------
+    :
+        True if at least one leaf is a tracer.
+
+    Examples
+    --------
+    >>> import jax
+    >>> import numpy as np
+    >>> from nemos.tree_utils import is_traced
+    >>> is_traced(np.arange(3))
+    False
+    >>> bool(jax.jit(lambda x: is_traced(x))(np.arange(3)))
+    True
+    """
+    return pytree_map_and_reduce(lambda x: isinstance(x, Tracer), any, pytrees)
+
+
+def tree_slice(data: Any, idx, is_leaf: Optional[Callable] = None):
+    """
+    Apply an indexing operation to each array in a nested structure.
+
+    Parameters
+    ----------
+    data :
+        A nested structure containing arrays (e.g., a dictionary of arrays).
+    idx :
+        The indexing operation to apply. This can be an integer, slice,
+        NumPy array (boolean or integer), tuple of indexing operations, ellipsis, or None.
+    is_leaf :
+        Callable, returns true if sub-tree is a leaf.
+
+    Returns
+    -------
+    Any
+        A nested structure with the same format as `data`, where each array has been sliced according to `idx`.
+    """
+    return jax.tree_util.tree_map(lambda x: x[idx], data, is_leaf=is_leaf)
+
+
+def tree_take(data, i, axis=1, is_leaf=None):
+    """
+    Apply ``jnp.take`` to each non-scalar leaf in a pytree.
+
+    Scalar and 0-dimensional leaves are returned unchanged. All other leaves
+    are sliced using ``jnp.take(x, i, axis=axis)``.
+
+    Parameters
+    ----------
+    data :
+        Pytree whose leaves are arrays or array-like objects.
+    i :
+        Indices passed to ``jnp.take``.
+    axis :
+        Axis along which to select values. Passed directly to ``jnp.take``.
+    is_leaf :
+        Optional predicate specifying additional pytree leaves. Forwarded to
+        ``jax.tree_util.tree_map``.
+
+    Returns
+    -------
+    Any
+        A pytree with the same structure as ``data``, where each non-scalar
+        leaf has been indexed using ``jnp.take`` along the specified axis.
+    """
+    from .type_casting import _is_scalar_or_0d
+
+    return jax.tree_util.tree_map(
+        lambda x: x if _is_scalar_or_0d(x) else jnp.take(x, i, axis=axis),
+        data,
+        is_leaf=is_leaf,
+    )
+
+
+def tree_broadcast_prefix(prefix: Any, full: Any) -> Any:
+    """Expand a prefix-spelled pytree to one entry per leaf of ``full``.
+
+    A prefix tree names a whole subtree with a single value, the way ``jax.vmap``
+    accepts ``in_axes=GLMParams(1, 0)`` for parameters whose ``coef`` is itself a
+    pytree. That spelling is only usable where JAX does the broadcasting; operations
+    that pair the tree leaf-by-leaf (``equinox.partition`` against a per-leaf filter
+    spec, for instance) need it expanded first, otherwise they fail on the structure
+    mismatch.
+
+    Parameters
+    ----------
+    prefix :
+        Pytree whose leaves each stand for a subtree of ``full``.
+    full :
+        Pytree giving the structure to expand to. Must extend ``prefix``.
+
+    Returns
+    -------
+    :
+        A pytree with the structure of ``full``, where every leaf carries the value
+        of the ``prefix`` leaf that covers it.
+
+    Examples
+    --------
+    >>> from nemos.tree_utils import tree_broadcast_prefix
+    >>> tree_broadcast_prefix({"a": 1, "b": 0}, {"a": {"x": None, "y": None}, "b": None})
+    {'a': {'x': None, 'y': None}, 'b': None}
+    """
+    treedef = jax.tree_util.tree_structure(prefix)
+    return jax.tree_util.tree_unflatten(
+        treedef,
+        [
+            jax.tree_util.tree_map(lambda _: value, subtree)
+            for value, subtree in zip(
+                jax.tree_util.tree_leaves(prefix), treedef.flatten_up_to(full)
+            )
+        ],
+    )
+
+
+# The following functions are adapted from jaxopt.tree_utils
+
+tree_add = partial(jax.tree_util.tree_map, operator.add)
+tree_add.__doc__ = "Tree addition."
+
+tree_sub = partial(jax.tree_util.tree_map, operator.sub)
+tree_sub.__doc__ = "Tree subtraction."
+
+
+def tree_scalar_mul(scalar, pytree_x):
+    """Compute scalar * pytree_x."""
+    return jax.tree_util.tree_map(lambda x: scalar * x, pytree_x)
+
+
+def tree_add_scalar_mul(pytree_x, scalar, pytree_y):
+    """Compute pytree_x + scalar * pytree_y."""
+    return jax.tree_util.tree_map(lambda x, y: x + scalar * y, pytree_x, pytree_y)
+
+
+def tree_sum(pytree_x):
+    """Compute sum(pytree_x)."""
+    sums = jax.tree_util.tree_map(jnp.sum, pytree_x)
+    return jax.tree_util.tree_reduce(operator.add, sums)
+
+
+def tree_l2_norm(pytree_x, squared=False):
+    """Compute the l2 norm ||pytree_x||."""
+    squared_tree = jax.tree_util.tree_map(
+        lambda leaf: jnp.square(leaf.real) + jnp.square(leaf.imag), pytree_x
+    )
+    sqnorm = tree_sum(squared_tree)
+    if squared:
+        return sqnorm
+    else:
+        return jnp.sqrt(sqnorm)
+
+
+def tree_zeros_like(pytree_x):
+    """Create an all-zero tree with the same structure as pytree_x."""
+    return jax.tree_util.tree_map(jnp.zeros_like, pytree_x)
+
+
+def tree_full_like(pytree_x, fill_value):
+    """Create a tree with the same structure as pytree_x and fill it with fill_value."""
+    return jax.tree_util.tree_map(lambda _: fill_value, pytree_x)
+
+
+def has_matching_axis_pytree(*pytree: Any, axis: int = 0):
+    """Check if an arbitrary number of trees have matching axis length."""
+    ax_lengths = {
+        xi.shape[axis] for tree in pytree for xi in jax.tree_util.tree_leaves(tree)
+    }
+    return len(ax_lengths) == 1
+
+
+def drop_nans(*trees):
+    """Drop all NaNs from trees."""
+    is_valid = get_valid_multitree(*[t for t in trees if t is not None])
+    return [
+        jax.tree_util.tree_map(lambda x: x[is_valid], par) if par is not None else None
+        for par in trees
+    ]
+
+
+def ravel_pytree_nest(pytree):
+    """Batch-last pytree ravel that also supports non-batched pytrees."""
+    leaves = jax.tree.leaves(pytree)
+    batch_dims = [x.shape[-1] for x in leaves if x.ndim > 0]
+    if not batch_dims or not all(b == batch_dims[0] for b in batch_dims):
+        return ravel_pytree(pytree)
+
+    N = batch_dims[0]
+    in_axes = jax.tree.map(lambda x: -1 if x.ndim > 0 else None, pytree)
+    sample0 = jax.tree.map(
+        lambda x: jnp.take(x, 0, axis=-1) if x.ndim > 0 else x, pytree
+    )
+    _, unravel_one = ravel_pytree(sample0)
+
+    flat = jax.vmap(lambda t: ravel_pytree(t)[0], in_axes=(in_axes,))(pytree).reshape(
+        -1
+    )
+
+    out_axes = jax.tree.map(lambda x: -1 if x.ndim > 0 else 0, sample0)
+
+    def unravel(x_flat):
+        return jax.vmap(unravel_one, out_axes=out_axes)(x_flat.reshape(N, -1))
+
+    return flat, unravel
